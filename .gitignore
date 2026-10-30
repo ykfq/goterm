@@ -1,0 +1,33 @@
+# Build output (Wails v3 writes the binary to /bin)
+/bin/
+/build/bin/
+/frontend/dist/
+/frontend/node_modules/
+/.task/
+
+# Build scratch: logs, error captures and throwaway test binaries written by the
+# task scripts and by `go test -c` on machines where %TEMP% is not executable.
+/build/*.log
+/build/**/*.log
+/build/**/*.err
+/build/gotmp/
+/build/testbin/
+
+# Screenshots written by tools/gui-*.ps1 stay local: a capture can carry whatever
+# the desktop or a screen-capture policy stamps onto it. docs/screenshot.png is
+# the curated one, and it is the only image the READMEs use.
+/build/gui-*.png
+/build/glyphs-*.png
+
+# Local state and scratch
+/GOTERM_DIR/
+*.log
+*.tmp
+
+# Tool state
+/.codewhale/
+
+# Editors
+.vscode/
+.idea/
+*.swp

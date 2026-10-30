@@ -1,0 +1,214 @@
+@import 'tailwindcss';
+
+/*
+ * One set of colour tokens, switched by [data-theme] on <html>. Tailwind is used
+ * for layout and spacing; the palette stays in plain CSS variables so the
+ * terminal, the scrollbars and the UI can never drift apart.
+ */
+:root,
+[data-theme='dark'] {
+  --bg: #0b0f14;
+  --panel: #11161d;
+  --panel-2: #161d26;
+  --border: #222c38;
+  --border-soft: #1a232d;
+  --text: #d7e0ea;
+  --text-dim: #8a99a8;
+  /* Hints only: distinctly dimmer than text the user actually typed. */
+  --placeholder: #4a5866;
+  --accent: #4aa8ff;
+  --accent-ink: #04121f;
+  --ok: #3fb950;
+  --warn: #d29922;
+  --err: #f85149;
+  --term-bg: #0d1117;
+  --term-fg: #d7e0ea;
+  --selection: #214373;
+}
+
+[data-theme='light'] {
+  --bg: #f6f8fa;
+  --panel: #ffffff;
+  --panel-2: #eef2f6;
+  --border: #d6dee6;
+  --border-soft: #e6ecf1;
+  --text: #1f2933;
+  --text-dim: #5c6b7a;
+  --placeholder: #a9b4bf;
+  --accent: #0b62c4;
+  --accent-ink: #ffffff;
+  --ok: #1a7f37;
+  --warn: #9a6700;
+  --err: #cf222e;
+  --term-bg: #ffffff;
+  --term-fg: #1f2933;
+  --selection: #bfe0ff;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 6px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/*
+ * Element resets belong in Tailwind's `base` layer, NOT at the top level.
+ *
+ * A rule written outside every `@layer` outranks *every* layered rule, whatever
+ * its specificity — that is how CSS cascade layers work. `button { color: inherit }`
+ * sitting here therefore beat every `text-[…]` utility on every button in the app:
+ * "New host" and "Save & connect" painted themselves with the inherited text colour,
+ * which in the light theme is near-black on dark blue — the reported "深蓝色配黑字
+ * 看不清". It also quietly swallowed the red on Delete and the dim on the
+ * unselected auth-type buttons, and `font: inherit` swallowed `font-mono` on every
+ * input (the shorthand resets font-family too). Inside `@layer base` these stay the
+ * default they were meant to be: a floor the utilities can override.
+ */
+@layer base {
+  button {
+    font: inherit;
+    color: inherit;
+  }
+
+  input,
+  select,
+  textarea {
+    font: inherit;
+  }
+
+  /*
+   * A placeholder is a hint, not a value. Chromium's default is the input's own
+   * colour at ~54% opacity, which on a dark panel reads like typed text — the
+   * New host form looked pre-filled. Pin it to a token so both themes stay quiet,
+   * and keep it in `base` so a component can still override it with a utility.
+   */
+  input::placeholder,
+  textarea::placeholder {
+    color: var(--placeholder);
+    opacity: 1; /* Firefox dims placeholders on its own; this is the real colour */
+  }
+}
+
+/* --- xterm ------------------------------------------------------------- */
+
+.terminal-host {
+  position: relative;
+  height: 100%;
+  width: 100%;
+  padding: 4px 0 0 6px;
+  background: var(--term-bg);
+  overflow: hidden;
+}
+
+.terminal-host .xterm {
+  height: 100%;
+}
+
+.terminal-host .xterm-viewport {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+  background-color: transparent !important;
+}
+
+.terminal-host .xterm-screen {
+  outline: none;
+}
+
+.terminal-host::after {
+  /* A hairline that reads as focus without stealing space from the grid. */
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border: 1px solid transparent;
+  transition: border-color 120ms ease;
+}
+
+.terminal-host.is-focused::after {
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+/* --- odds and ends ------------------------------------------------------ */
+
+.focus-ring:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.truncate-1 {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/*
+ * Section headings inside a settings tab. They were uppercase, letterspaced and
+ * dim — the look of a caption, which made each group of controls blend into the
+ * field above it. Sentence case in the accent colour reads as a label and is
+ * easy to scan for; one class, because seven copies of the same utility string
+ * is seven chances to change only six of them.
+ */
+.settings-section {
+  margin-bottom: 0.5rem;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+@keyframes slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.toast-in {
+  animation: slide-in 140ms ease-out;
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+.pulse {
+  animation: pulse-dot 1.1s ease-in-out infinite;
+}

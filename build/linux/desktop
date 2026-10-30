@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Name=GoTerm
+Comment=SSH terminal with trzsz file transfer
+# The Exec line includes %u to pass the URL to the application
+Exec=/usr/local/bin/goterm %u
+Terminal=false
+Type=Application
+Icon=goterm
+Categories=Utility;
+StartupWMClass=goterm
+
+ 

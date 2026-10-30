@@ -1,0 +1,15 @@
+{
+	"fixed": {
+		"file_version": "1.0.0"
+	},
+	"info": {
+		"0409": {
+			"ProductVersion": "1.0.0",
+			"CompanyName": "GoTerm",
+			"FileDescription": "SSH terminal with trzsz file transfer",
+			"LegalCopyright": "(c) 2026, GoTerm contributors",
+			"ProductName": "GoTerm",
+			"Comments": "SSH terminal, xterm.js frontend, trzsz file transfer"
+		}
+	}
+}

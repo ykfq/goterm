@@ -1,0 +1,18 @@
+GoTerm
+Copyright 2026 GoTerm contributors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+It bundles or embeds third-party components that keep their own licenses:
+
+  Wails v3                 MIT       https://github.com/wailsapp/wails
+  xterm.js and addons      MIT       https://github.com/xtermjs/xterm.js
+  Vue 3                    MIT       https://github.com/vuejs/core
+  lucide (icons)           ISC       https://github.com/lucide-icons/lucide
+  trzsz (trzsz.js)         MIT       https://github.com/trzsz/trzsz.js
+    frontend/src/vendor/trzsz/progress.ts is copied verbatim from trzsz 1.1.6,
+    Copyright (c) 2022-2026 Lonny Wong <lonnywong@qq.com>, and keeps its header.
+  zmodem.js                MIT       https://github.com/FGasper/zmodemjs
+
+Go dependencies embedded in the executable keep the licenses recorded by their
+modules (among them golang.org/x/crypto, BSD-3-Clause), listed in go.mod / go.sum.

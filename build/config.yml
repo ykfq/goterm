@@ -1,0 +1,47 @@
+# Project metadata for `wails3 build` / packaging.
+# After changing `info`, run `wails3 task common:update:build-assets` to
+# regenerate the platform assets (icons, manifests, plists).
+version: '3'
+
+info:
+  companyName: "GoTerm"
+  productName: "GoTerm"
+  productIdentifier: "io.github.ykfq.goterm"
+  description: "SSH terminal with trzsz file transfer"
+  copyright: "(c) 2026, GoTerm contributors"
+  comments: "SSH terminal, xterm.js frontend, trzsz file transfer"
+  version: "1.0.0"
+
+# Dev mode: `wails3 dev` rebuilds the Go side on save and hot-reloads the
+# Vite server (frontend/vite.config.ts pins the port to match).
+dev_mode:
+  root_path: .
+  log_level: warn
+  debounce: 1000
+  ignore:
+    dir:
+      - .git
+      - node_modules
+      - frontend
+      - bin
+      - build
+    file:
+      - .DS_Store
+      - .gitignore
+      - .gitkeep
+      - "*_test.go"
+    watched_extension:
+      - "*.go"
+      - "*.js"
+      - "*.ts"
+    git_ignore: true
+  executes:
+    - cmd: wails3 build DEV=true
+      type: blocking
+    - cmd: wails3 task common:dev:frontend
+      type: background
+    - cmd: wails3 task run
+      type: primary
+      exit_policy: shutdown
+
+fileAssociations: []

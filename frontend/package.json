@@ -1,0 +1,38 @@
+{
+  "name": "goterm-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build",
+    "typecheck": "vue-tsc --noEmit",
+    "test": "vitest run",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@wailsio/runtime": "^3.0.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/addon-search": "^0.16.0",
+    "@xterm/addon-unicode-graphemes": "^0.4.0",
+    "@xterm/addon-web-links": "^0.12.0",
+    "@xterm/addon-webgl": "^0.19.0",
+    "@xterm/xterm": "^6.0.0",
+    "lucide-vue-next": "^1.0.0",
+    "trzsz": "^1.1.6",
+    "vue": "^3.5.44",
+    "zmodem.js": "^0.1.10"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^22.10.2",
+    "@vitejs/plugin-vue": "^6.0.10",
+    "@vue/test-utils": "^2.5.1",
+    "happy-dom": "^21.0.4",
+    "tailwindcss": "^4.3.3",
+    "typescript": "~5.9.3",
+    "vite": "^7.3.7",
+    "vitest": "^5.0.5",
+    "vue-tsc": "^3.3.13"
+  }
+}
