@@ -2,7 +2,7 @@
 import { Plus, X } from 'lucide-vue-next';
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 
-import { activateTab, closeTab, duplicateTab, moveTab, reconnect, state } from '../lib/store';
+import { activateTab, closeTab, duplicateTab, moveTab, reclaimFocusSoon, reconnect, state } from '../lib/store';
 import type { Tab } from '../lib/store';
 
 const emit = defineEmits<{ (event: 'quick-connect'): void }>();
@@ -87,7 +87,11 @@ function openTabMenu(event: MouseEvent, tab: Tab): void {
 }
 
 function closeMenu(): void {
+  if (!menu.value) return;
   menu.value = null;
+  // The entry that was clicked goes away with the menu; without this the keyboard
+  // is left on `<body>`, which Windows reports as a disabled input method.
+  reclaimFocusSoon();
 }
 
 function run(tabId: string | undefined, action: (id: string) => unknown): void {

@@ -1,7 +1,7 @@
 # GoTerm
 
 **A desktop SSH terminal written in Go + [Wails v3](https://wails.io) + [xterm.js](https://xtermjs.org):**
-- `rz`/`sz` friendly: transfers use [`trz`/`tsz`](https://github.com/trzsz/trzsz.js) by default, and the
+- `rz`/`sz` friendly: transfers use [`trz`/`tsz`](https://github.com/trzsz/trzsz) by default, and the
   ZMODEM `rz`/`sz` of a plain lrzsz install works too;
 - session keepalive: an SSH session can be kept alive for up to 24 h (configurable);
 - session duplication: need another shell on the same connection? Right-click a tab → `Duplicate`;
@@ -36,7 +36,7 @@ Hand the repository to any AI coding assistant with one line:
 - GPU (WebGL) rendering with automatic DOM fallback.
 - `Ctrl+Shift+F` find-in-tab (`@xterm/addon-search`); the count is real buffer matches, not what fits
   on screen.
-- Copy on select (mouse-release only), multi-line paste confirmation with an editable box.
+- Copy on select (mouse-release only), and a full-screen program's own *Copy* works too — relayed through OSC 52. Multi-line paste confirmation with an editable box.
 - Remote text encoding: UTF-8 (default) or GB18030 / GBK / GB2312 / Big5 / Shift_JIS, streamed so a
   multi-byte character split across a 64 KiB chunk is still decoded correctly.
 
@@ -73,7 +73,7 @@ Hand the repository to any AI coding assistant with one line:
 
 ## Install
 
-Download `goterm-v1.0.0-windows-x64.exe` (and the matching `.md5` / `.sha256`) from the repository's
+Download `goterm-v1.1.0-windows-x64.exe` (and the matching `.md5` / `.sha256`) from the repository's
 [**Releases**](https://github.com/ykfq/goterm/releases) page. The binaries there are built by GitHub
 Actions from the tag ([`.github/workflows/release.yml`](.github/workflows/release.yml)), never
 committed to the repository.
@@ -168,7 +168,8 @@ used to close the tab *and* rub out a word, so three typos cost you the session.
 
 **When a full-screen program owns the mouse** (`htop`, `tmux`): right-click goes to the program, which
 draws its own menu; `Shift+right-click` opens GoTerm's. `Shift+drag` selects locally, and copy-on-select
-still copies it on release. `Ctrl+wheel` still zooms.
+still copies it on release. The program's own *Copy* item works as well: it writes the text out with OSC 52
+and GoTerm puts it on the clipboard. `Ctrl+wheel` still zooms.
 
 **Pasting several lines** opens an editable confirmation box first — a block of text is a script nobody
 has read. One line (with or without its newline) goes straight through.
@@ -252,6 +253,7 @@ attempts, are in [`docs/DECISIONS.md`](docs/DECISIONS.md).
 - Keepalives prove the link is alive; they cannot detect a frozen server that still answers TCP
   (an unanswered probe is noticed within ~45 s × 3).
 - Moving the storage folder applies on the next start, and GoTerm never copies your files for you.
+- A program can put text on the clipboard (OSC 52), but never read it back: read queries are ignored on purpose.
 - No installer (NSIS), no port forwarding, no `~/.ssh/config` parsing, no session logging, no per-host
   profiles. Linux/macOS builds are untested and use a short built-in font list.
 - Output is decoded per your encoding setting; **input is always sent as UTF-8** (browsers have no GBK

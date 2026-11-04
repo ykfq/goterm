@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { PanelLeft, Plug, Server, TerminalSquare } from 'lucide-vue-next';
-import { onBeforeUnmount, onMounted, reactive, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 
 import ConnectDialog from './components/ConnectDialog.vue';
 import KnownHostsDialog from './components/KnownHostsDialog.vue';
@@ -24,6 +24,7 @@ import {
   pasteIntoActive,
   prompt,
   reclaimFocus,
+  reclaimFocusSoon,
   runSelfTest,
   secretPrompt,
   setFontSize,
@@ -40,8 +41,26 @@ const showSettings = ref(false);
 
 function onWindowBack(): void {
   if (document.visibilityState === 'hidden') return;
-  reclaimFocus();
+  // `reattach`: the window was in the background, which is where a webview can
+  // lose its input context while the terminal's textarea never lost DOM focus.
+  // That is the red cross, and only a focus handoff puts the IME back.
+  reclaimFocus({ reattach: true });
 }
+
+/**
+ * Is any modal covering the terminal?
+ *
+ * Every one of them is a `v-if`, so closing one removes the button that had the
+ * keyboard and leaves focus on `<body>` — the window keeps receiving keys with
+ * nothing editable focused, which Windows paints as a disabled input method. The
+ * terminal gets the keyboard back the moment the last one is gone.
+ */
+const overlayOpen = computed(
+  () => dialog.open || showKnownHosts.value || showSettings.value || prompt.open || secretPrompt.open,
+);
+watch(overlayOpen, (open) => {
+  if (!open) reclaimFocusSoon();
+});
 
 function openDialog(mode: 'new' | 'edit' | 'adhoc', host?: Host): void {
   dialog.mode = mode;

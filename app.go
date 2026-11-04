@@ -26,7 +26,7 @@ import (
 )
 
 // Version is stamped by the build; the UI shows it in the status bar.
-const Version = "1.0.0"
+const Version = "1.1.0"
 
 // App is the object bound to the frontend. Every exported method here is
 // callable from TypeScript, so keep signatures additive.

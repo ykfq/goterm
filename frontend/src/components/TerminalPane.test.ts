@@ -55,6 +55,7 @@ const store = {
   pasteIntoActive: vi.fn(async () => undefined),
   pushNotice: vi.fn(),
   explainProgramMouse: vi.fn(),
+  reclaimFocusSoon: vi.fn(),
   reconnect: vi.fn(async () => undefined),
   setFontSize: vi.fn(),
   openFind: vi.fn(),
@@ -147,6 +148,15 @@ describe('terminal context menu', () => {
     const wrapper = await openMenu();
     await item(wrapper, 'Paste').trigger('click');
     expect(store.pasteIntoActive).toHaveBeenCalledWith('tab-1');
+  });
+
+  it('asks for the keyboard back once the menu is gone', async () => {
+    // The entry that had focus is unmounted with the menu, which leaves the
+    // keyboard on `<body>` — the state Windows paints as a disabled IME. The pane
+    // cannot take it back itself (only the store knows which tab is active).
+    const wrapper = await openMenu();
+    await item(wrapper, 'Paste').trigger('click');
+    expect(store.reclaimFocusSoon).toHaveBeenCalled();
   });
 
   it('runs Clear buffer', async () => {
@@ -330,5 +340,20 @@ describe('in-tab find', () => {
     await input.trigger('keydown', { key: 'Escape' });
     expect(store.closeFind).toHaveBeenCalledTimes(1);
     expect(bridge.focus).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('who gives the pane the keyboard', () => {
+  it('does not take it itself when it becomes active', async () => {
+    // The keyboard belongs to the store (`focusTabIfShown`), which gives it after
+    // `v-show` has shown the pane. Focusing here instead ran *before* that flush:
+    // a no-op inside a `display: none` subtree, which left the keyboard in the
+    // pane that was about to disappear — the state Windows draws as a disabled
+    // input method.
+    const wrapper = mount(TerminalPane, { props: { tab, active: false } });
+    await wrapper.setProps({ active: true });
+    expect(bridge.focus).not.toHaveBeenCalled();
+    // It still resizes: a pane shown at a different window size has to re-fit.
+    expect(bridge.fitNow).toHaveBeenCalled();
   });
 });

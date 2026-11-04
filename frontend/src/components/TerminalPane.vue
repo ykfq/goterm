@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 
-import { activateTab, closeFind, closeTab, copyActiveSelection, ensureBridge, explainProgramMouse, find, getBridge, openFind, pasteIntoActive, pushNotice, reconnect, releaseBridge, setFontSize, state } from '../lib/store';
+import { activateTab, closeFind, closeTab, copyActiveSelection, ensureBridge, explainProgramMouse, find, getBridge, openFind, pasteIntoActive, pushNotice, reclaimFocusSoon, reconnect, releaseBridge, setFontSize, state } from '../lib/store';
 import type { Tab } from '../lib/store';
 
 const props = defineProps<{ tab: Tab; active: boolean }>();
@@ -58,14 +58,21 @@ watch(
   () => props.active,
   (active) => {
     if (!active) return;
-    const bridge = getBridge(props.tab.id);
-    bridge?.fitNow();
-    bridge?.focus();
+    // Only the size is this pane's business. The keyboard follows the active tab
+    // from the store, *after* `v-show` has shown this pane — focusing here ran
+    // before the swap, which is a no-op at best, and it is how the pane that was
+    // about to be hidden kept the keyboard (and Windows drew a disabled IME).
+    getBridge(props.tab.id)?.fitNow();
   },
 );
 
 function closeMenu(): void {
-  if (menu.value) menu.value = null;
+  if (!menu.value) return;
+  menu.value = null;
+  // The menu's own button had the keyboard and is being removed with the menu. Left
+  // alone, focus lands on `<body>` and Windows draws a disabled IME over a terminal
+  // that still receives keys. See `reclaimFocusSoon()`.
+  reclaimFocusSoon();
 }
 
 function onPointerDownOutside(event: PointerEvent): void {

@@ -28,6 +28,8 @@ import { RemoteTextDecoder } from './encoding';
 import type { TerminalEncoding } from './encoding';
 import { writeClipboard } from './clipboard';
 import { OutputHighlighter } from './highlight';
+import { parseOsc52 } from './osc52';
+import { isRendered } from './rendered';
 import type { CustomRule } from './highlight';
 import { filterStdoutWrite, isLibraryNoise, isRemoteStackDump, isTransferCancel } from './transfer';
 import { appOwnsKey } from './shortcuts';
@@ -545,6 +547,17 @@ export interface TerminalBridge {
   /** Re-measure the container; returns the new size when it changed. */
   fitNow: () => { cols: number; rows: number } | null;
   focus: () => void;
+  /**
+   * Hand the keyboard to this terminal again, even if it already has it.
+   *
+   * DOM focus is not the whole story on Windows: while the window is in the
+   * background the webview can lose its input context, and the IME is then
+   * painted as disabled (the red cross) with the textarea still "focused".
+   * A blur/focus handoff is what clicking does, and what gives the input method
+   * something to attach to. Refused mid-composition, and it never writes escape
+   * sequences into a running transfer.
+   */
+  reattachKeyboard: () => void;
   setTheme: (theme: ThemeName) => void;
   setFontSize: (size: number) => void;
   setFontFamily: (family: string) => void;
@@ -597,6 +610,10 @@ export function createTerminalBridge(options: CreateTerminalOptions): TerminalBr
   // selected, and the release then happens over some other element.
   let pressedInPane = false;
   let stopMouseHooks: (() => void) | null = null;
+  let stopKeyboardWatch: (() => void) | null = null;
+  // An IME is mid-composition in this pane. Windows ends a composition badly when
+  // the field is disturbed under it, so nothing here moves the keyboard meanwhile.
+  let composing = false;
   // A custom background is a *pane* colour: the palette follows the pane's own
   // brightness (see panePalette), so the text is never painted onto a pane it
   // cannot be read on.
@@ -969,6 +986,56 @@ export function createTerminalBridge(options: CreateTerminalOptions): TerminalBr
     });
   };
 
+  /**
+   * Take the keyboard back when it falls nowhere.
+   *
+   * Everything typed into this pane goes through xterm's helper textarea, which
+   * is invisible by design. When that textarea loses focus to *nothing* — the
+   * tab menu or the context menu it was clicked into has just been removed with
+   * its buttons — the window keeps receiving keys with no editable focused, and
+   * Windows paints the IME as disabled (the red cross). No input method can
+   * attach to that state, so Chinese stops working until the user clicks into the
+   * terminal again.
+   *
+   * The question is asked one task later on purpose: while `blur` is being
+   * dispatched the browser has already cleared `activeElement`, but whatever is
+   * about to receive the keyboard has not got it yet. A dialog field, another
+   * pane or a tab strip button is in place by then, and this does nothing.
+   */
+  const watchKeyboard = (): void => {
+    const textarea = term.textarea;
+    if (!textarea) return;
+    const onBlur = (): void => {
+      setTimeout(() => {
+        // The whole app is in the background: the OS hands the keyboard back
+        // itself when it returns, and nothing should be sent meanwhile.
+        if (!document.hasFocus()) return;
+        const active = document.activeElement;
+        if (active && active !== document.body) return;
+        // A pane hidden by `v-show` must not try: that is exactly the state that
+        // leaves the keyboard in a subtree nobody renders.
+        if (!el.isConnected || !isRendered(el)) return;
+        // Red line 4: a focus report is still a sequence written into the PTY.
+        if (trzsz.isTransferringFiles() || zmodem.active()) return;
+        term.focus();
+      }, 0);
+    };
+    const onCompositionStart = (): void => {
+      composing = true;
+    };
+    const onCompositionEnd = (): void => {
+      composing = false;
+    };
+    textarea.addEventListener('blur', onBlur);
+    textarea.addEventListener('compositionstart', onCompositionStart);
+    textarea.addEventListener('compositionend', onCompositionEnd);
+    stopKeyboardWatch = () => {
+      textarea.removeEventListener('blur', onBlur);
+      textarea.removeEventListener('compositionstart', onCompositionStart);
+      textarea.removeEventListener('compositionend', onCompositionEnd);
+    };
+  };
+
   const bridge: TerminalBridge = {
     id: options.id,
     el,
@@ -980,6 +1047,7 @@ export function createTerminalBridge(options: CreateTerminalOptions): TerminalBr
       if (!opened) {
         opened = true;
         term.open(el);
+        watchKeyboard();
         if (window.ResizeObserver) {
           const observer = new ResizeObserver(() => fitSoon());
           observer.observe(el);
@@ -1015,6 +1083,21 @@ export function createTerminalBridge(options: CreateTerminalOptions): TerminalBr
     },
 
     focus() {
+      term.focus();
+    },
+
+    reattachKeyboard() {
+      // Mid-composition the keyboard belongs to the IME. Blurring now would throw
+      // the pinyin away and leave the input method in whatever mode the
+      // interruption left it in — the very thing this is meant to cure.
+      if (composing) return;
+      // Focus-out/in are escape sequences the remote asked for (or not); either
+      // way nothing enters the stream while a file is moving.
+      if (trzsz.isTransferringFiles() || zmodem.active()) {
+        term.focus();
+        return;
+      }
+      term.blur();
       term.focus();
     },
 
@@ -1163,6 +1246,8 @@ export function createTerminalBridge(options: CreateTerminalOptions): TerminalBr
       stopIdleTimer();
       stopMouseHooks?.();
       stopMouseHooks = null;
+      stopKeyboardWatch?.();
+      stopKeyboardWatch = null;
       // Only let go of stdout if this pane still owns it.
       if (stdoutSink?.id === options.id) stdoutSink = null;
       if (frame) cancelAnimationFrame(frame);
@@ -1200,6 +1285,26 @@ export function createTerminalBridge(options: CreateTerminalOptions): TerminalBr
   el.addEventListener('focusin', () => el.classList.add('is-focused'));
   el.addEventListener('focusout', () => el.classList.remove('is-focused'));
 
+  // --- a program's own copy --------------------------------------------------
+  //
+  // A TUI has no clipboard and no `xclip` on the host it runs on, so its Copy
+  // item prints `ESC ] 52 ; c ; <base64> BEL` and leaves the rest to us. xterm
+  // drops OSC 52 as unknown; without this handler the menu item (and anything
+  // else that copies from inside a full-screen program) fails silently.
+  disposables.push(
+    term.parser.registerOscHandler(52, (data) => {
+      const copy = parseOsc52(data);
+      if (copy.kind === 'copy') {
+        void writeClipboard(copy.text).then((ok) => {
+          if (!ok) options.onNotice?.('warn', 'The program asked to copy, but the clipboard could not be reached.');
+        });
+      }
+      // Either way the sequence is ours: returning false would hand it to the
+      // parser's fallback, which only logs it.
+      return true;
+    }),
+  );
+
   // --- copy on select --------------------------------------------------------
   //
   // The gesture decides, not the clipboard: a selection that appears because a
@@ -1224,10 +1329,16 @@ export function createTerminalBridge(options: CreateTerminalOptions): TerminalBr
     if (started) copySelectionNow();
   };
 
-  el.addEventListener('mousedown', onMouseDown);
+  // Capture phase, and not by accident: while a program owns the mouse, the
+  // press that starts a Shift-selection is the one xterm *stops propagating*
+  // (`SelectionService.handleMouseDown`, so the program never sees it). A
+  // bubbling listener here therefore never saw the gesture, and the release
+  // copied nothing — which is why select-to-copy worked in a shell and silently
+  // did nothing in vim or a TUI. Capture runs before xterm's own handler.
+  el.addEventListener('mousedown', onMouseDown, true);
   window.addEventListener('mouseup', onMouseUp);
   stopMouseHooks = () => {
-    el.removeEventListener('mousedown', onMouseDown);
+    el.removeEventListener('mousedown', onMouseDown, true);
     window.removeEventListener('mouseup', onMouseUp);
   };
 

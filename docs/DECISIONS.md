@@ -823,6 +823,36 @@ reset 归位）、`components/SettingsDialog.test.ts`（控件）。
 另外，输入框里的 `Esc` 在 **IME 组词中**不拦（`event.isComposing`）：那一下属于候选窗，抢了就
 是把半截拼音卡在原地。
 
+关于**在 TUI 里复制**（2026-11-03 修）：报告是同一个会话里两件事一起坏，成因互不相干。
+
+1. **程序自己的 Copy 走 OSC 52**。TUI 是在远端跑的，它没有本机剪贴板，也没有 `xclip` /
+   `clip.exe` 可用；菜单里的 Copy 只能把文本打成 `ESC ] 52 ; c ; <base64> BEL` 交给终端。
+   xterm.js 有意不实现这条，于是序列到解析器就被当成“未知 OSC”丢掉——点了没反应，也没有
+   任何报错。`lib/osc52.ts` 补上**写入**这一半：`Pc;Pd` 取最后一个 `;` 之后那段（base64 字
+   母表里没有 `;`，所以选择名列表多长都不影响），base64 解成字节再按 **UTF-8** 交给
+   `writeClipboard`（中文 TUI 的复制也走同一条，不能按 latin1 解）。**读查询（`Pd` = `?`）
+   一律不答**：答了就等于把本机剪贴板交给远端进程，没有任何菜单需要这个。上限 4 MiB base64
+   （约 3 MiB 文本）：xterm 自己的 OSC 缓冲到 10 MB 才放弃，而一次“全选”误触不该让解码发生在
+   终端的输入路径上。只有失败（剪贴板够不着）才说话，成功保持安静——复制不该弹提示。
+2. **“选中即复制”在 TUI 里静默失效**。带 Shift 的拖选由 xterm 的 `SelectionService` 兜住，而
+   它在“程序占着鼠标”时会对那个 `mousedown` 调 `stopPropagation()`（否则程序会收到本不该收到的
+   按下）。GoTerm 的手势记录挂在**冒泡**阶段，所以从来没看见这次按下，松手时 `pressedInPane`
+   仍是 false，什么都不复制——普通 shell 里一切正常，vim / TUI 里无声无息，而提示条上恰好还
+   写着“Shift+drag selects text (and still copies it)”。改成捕获阶段注册；测试里用“子元素上
+   stopPropagation”复刻 xterm 的那一拦，退回冒泡就只红那一条。
+
+顺手记一条**测试环境**的事，免得下一个人白查半小时：`@xterm/addon-unicode-graphemes` 0.4.0
+在 Node 下加载会抛 `RangeError: Array buffer allocation failed`。它用
+`new DataView(data.buffer)` 读 `Buffer.from(raw, 'base64')` 的结果，而 Node 把这块放进 8 KiB 的
+Buffer 池切片（实测 `byteOffset` 784），于是表头读在错的位置、“解压后长度”成了 17 亿
+（真实值 51056）。浏览器里没有 `Buffer`，走 `atob` 分支，所以应用本身没问题；`src/test-setup.ts`
+用一个只有 `activate` / `dispose` 的桩替掉它——这些测试要的是“真终端能建起来”，宽度表在无头
+环境里本来就量不出来，顺带也省掉每个 worker 一份 51 KB 的 trie。
+
+一条**没做**的边界：`tmux` 会把 OSC 52 包成 DCS 透传（`ESC P tmux ; … ESC \`，里面的 ESC 写两遍）
+再交给外层终端，那条还没解析——所以直接跑 TUI 时复制是好的，**在 tmux 里跑 TUI 仍然复制不出来**。
+要做就得再加一个 DCS 处理器并处理转义还原，这是另一件事，等真的有人在 tmux 里遇到再说。
+
 ---
 
 ### 5. 标签与会话管理
@@ -935,6 +965,36 @@ accent-ink、text/text-dim 与 bg/panel/panel-2、accent 当标题色时的对�
 夺回、对话框不抢、没有终端也不炸），并做了破坏性验证：改回同步聚焦、或短路 `reclaimFocus()`，
 对应测试立刻变红。仍属 🧪——真正的输入法行为只能由人在真实桌面上确认。
 
+
+**2026-11-03：TUI 里的红叉还会回来。** 上面那条修的是"切标签"，而用户报的是"在 TUI 里总是"。复查后
+确定有三条路各自都能把键盘弄丢，互不重叠：
+
+1. **窗格自己抢在隐藏时聚焦。** `TerminalPane.vue` 的 `props.active` watcher 还在同步调
+   `bridge.focus()`（§11.1#4 早就记下这条），而它跑在 `v-show` 换窗格**之前**：`display: none`
+   子树里的 `focus()` 是空操作，键盘于是留在那个"马上就要被藏起来"的窗格里。现在 watcher 只管
+   `fitNow()`，聚焦收进 store 一处——`watch(() => state.activeTabId, …, { flush: 'post' })`，
+   连直接改 `activeTabId` 的连接 / 复制 / 重连路径也一并盖住（它们以前全靠窗格自觉）。
+2. **键盘掉到 `<body>`。** 右键菜单项、对话框里的按钮被点过之后，控件随菜单一起卸载，焦点落在
+   `<body>`：窗口还在收键，但没有任何可编辑控件有焦点，Windows 就画红叉，任何输入法都挂不上去。
+   终端现在盯着自己的 helper textarea——`blur` 之后隔一个 task 看一眼，如果焦点既不在别的控件上、
+   也不在别的窗格（隐藏的窗格不抢）、窗口不在后台、也没有传输在跑，就把键盘收回来。隔一个 task 是
+   必要的：`blur` 派发时 `activeElement` 已经清空，而准备接手的那一方还没拿到焦点。
+   光靠它还不够——菜单开了一会儿才点，textarea 那次 `blur` 早就过去了，所以菜单与对话框在自己
+   的控件消失后显式调一次 `reclaimFocusSoon()`（`TerminalPane` / `TabBar` 的 `closeMenu`，以及
+   `App.vue` 里“还有弹层开着吗”的 watcher）。
+3. **切回窗口时 webview 丢了输入上下文。** textarea 从未失焦、DOM 一切正常，但窗口在后台期间
+   WebView2 的输入上下文可能已经没了——表现就是"看起来没问题，却打不出中文"。`reclaimFocus({ reattach })`
+   在窗口 / 网页重新可见时做一次 `blur()` + `focus()` 交接（正是点一下终端做的事），把 IME 重新挂上。
+   组词中不做（会把拼音丢掉），传输中只做聚焦不做交接（focus 报文的 ESC 序列也是往 PTY 写东西，红线 4）。
+
+测试：`frontend/src/lib/ime-focus.test.ts` 13 条（新增 8 条：直接改 `activeTabId` 也会聚焦、焦点掉到
+`<body>` 时收回、有真控件接手时不抢、隐藏窗格不抢、菜单开久了再关也能收回、窗口回来时重建、没离开时不打扰、
+组词中 / 传输中不交接），`TerminalPane.test.ts` 新增 2 条（窗格不再自己聚焦、菜单关掉时讨回键盘）。
+只有那 1 条红；破坏性验证逐条做过：把 watcher 的 `focus()` 加回去 → 只有那 1 条红；短路 store 里那条聚焦 watcher →
+2 条红（含原有的"等窗格可见再聚焦"）；短路 blur 收回 → 1 条红；短路 `reclaimFocusSoon()` → 1 条红；
+让 `reattach` 不生效 → 1 条红；去掉组词判断 → 1 条红。仍属 🧪：真正的输入法行为只能在真实桌面上确认——
+尤其第 3 条，它是对 WebView2 行为的补救，而那个行为本身无法在无头环境里复现。
+
 ---
 
 ### 10. 工程、测试与打包
@@ -969,10 +1029,10 @@ accent-ink、text/text-dim 与 bg/panel/panel-2、accent 当标题色时的对�
 3. **`Session` 上三个只写不读的字段**（中，误导）：`conn`（`manager.go:269` 赋值，全仓无读）、
    `bastion`（`:272`，注释说“read for reporting only”是假的——`Info()` 走 `cfg`/`link`）、
    `keepAlive`（`:276`，`Info()` 读的是 `link.every`）。定义在 `internal/sshx/session.go:66/71/80`。
-4. **切标签时两条聚焦路径并行**（中）：`activateTab` 走 `nextTick → focusIfShown`（正确的），而
-   `TerminalPane.vue:57-64` 的 `props.active` watcher 还在**同步** `bridge.focus()`——正是台账§9 说已
-   废弃的那条（pre-flush 时窗格仍隐藏 → 空操作）。今天靠调用顺序侥幸不炸，谁调一下顺序就
-   复现“已禁用输入法”红叉。修法：watcher 只留 `fitNow()`，聚焦一律走 `focusIfShown`。
+4. ~~**切标签时两条聚焦路径并行**~~ **已修（2026-11-03）**：`TerminalPane.vue` 的
+   `props.active` watcher 现在只留 `fitNow()`；聚焦收进 store 唯一一处——
+   `watch(() => state.activeTabId, …, { flush: 'post' })` → `focusTabIfShown()`，窗格换完再聚焦，
+   连直接改 `activeTabId` 的连接 / 复制 / 重连路径也一起盖上。见 §B-9。
 5. **一次连接失败有四种表达**（低，产品取向）：`status='error'` + `tab.detail` + sticky toast +
    终端里那行 `[goterm] …`（`store.ts:1291-1305`）。不是 bug，是没定过“一个事实几个载体”。
 
@@ -993,11 +1053,11 @@ accent-ink、text/text-dim 与 bg/panel/panel-2、accent 当标题色时的对�
 | # | 收敛项 | 现状（改了几轮） | 风险 |
 | --- | --- | --- | --- |
 | 1 | **主题一张表** | 7 轮；CSS 令牌 / xterm 调色板 / Go `wintheme` 十六进制三份拷贝，`ThemeName` 与 Go 的 `dark bool` 各说各话，加第三个主题要动 3 种语言约 8 处 | 中 |
-| 2 | **聚焦一条路** | 6 个调用点，只有 2 个走 `focusIfShown`（见 11.1#4） | 中（就是红叉那条线） |
+| 2 | ~~**聚焦一条路**~~ | **已收敛（2026-11-03）**：唯一入口是 store 里 `activeTabId` 的 post-flush watcher（`focusTabIfShown`），窗格自己不再聚焦 | — |
 | 3 | **一个事实一个提示载体** | 删过 4 次提示又留着失败的四种说法；**要先定“后台标签掉线要不要提示”** | 中 |
 | 4 | **设置声明式化** | 加一个开关键要改 6 处（默认/消毒/setter/对话框/测试/文档），`resetSettings` 已经漏了一个 | 中 |
 | 5 | **ZMODEM 进度胶水** | 渲染器其实已收敛（`vendor/trzsz/progress.ts` 一份 + 两个驱动），只剩 `zmodem.ts` 里“起条/收尾”的胶水该提成命名适配器 | 低 |
-| 6 | 鼠标归属 | 一个决策点（`openMenu` 里 `mouseTrackingMode + shiftKey`），**不动** | — |
+| 6 | 鼠标归属 | 一个决策点（`openMenu` 里 `mouseTrackingMode + shiftKey`）；**归属规则不动**，只补了 Shift 划选的复制与 OSC 52（见 §B-4） | — |
 
 `store.ts`（1,466 行）真正该拆的是：settings+主题、notices、host 导出导入、connect 重试状态机
 （那三条 Go 错误串正则）。`terminal.ts`（1,116 行）只有前 559 行是纯函数值得外提；工厂闭包拆开
@@ -1044,6 +1104,7 @@ WebView2 COM + x/crypto/ssh + syso**。所以“精简 JS”不是主战场。gz
 | a custom pane colour never leaves the text unreadable | `frontend/src/lib/terminal-theme.test.ts`: a black pane under the light theme is painted with the dark palette's ink (the exact bug — it used to be `#1f2933` on `#000000`), a white pane under the dark theme gets the light one, mid-grey picks by contrast rather than a threshold, and a live bridge re-derives it on `setTheme`/`setBackground`. `store-settings.test.ts` checks the same decision reaches `--term-fg`, and `SettingsDialog.test.ts` still sees the warning when the two disagree |
 | the terminal is told how far a `rz`/`sz` transfer has got | `frontend/src/vendor/trzsz/progress.test.ts` holds the vendoring honest (upstream licence header, its single import, no local edits) and pins what the bar draws: 0 %, 50 %, 100 %, repainted in place with `\r`, `(2/3)` for the second of three files, and a 40-column terminal shortening the name instead of wrapping. `zmodem.test.ts` › *progress while a file moves* drives a real session and reads what reached the screen — the bar, `(1/2)` then `(2/2)`, end-of-line plus cursor back, and nothing at all when the picker is cancelled; `zmodem-terminal.test.ts` proves the same bytes reach `term.write` through the real terminal bridge, which is what makes an `rz` and a `trz` transfer look alike |
 | right-click in a full-screen program goes to the program, not to a second menu | `frontend/src/components/TerminalPane.test.ts`: with mouse tracking on, `contextmenu` opens no GoTerm menu and the explanation fires once; `Shift+contextmenu` opens it; with tracking off, a plain right-click still opens it |
+| a TUI's own Copy, and Shift+drag inside one, reach the clipboard | `frontend/src/lib/osc52.test.ts` pins the payload reader: `c;<base64>`, UTF-8 text, the default / `p` / `s0`…`s7` selections, wrapped base64, a read query that is never answered, and malformed or oversized payloads ignored without throwing. `frontend/src/lib/terminal-clipboard.test.ts` drives it through a **real bridge**: `ESC ] 52 ; c ; …` with BEL and with ST lands on the clipboard, `c;?` does not, and a Shift-selection whose press was stopped where it was delivered — what xterm's `SelectionService` does when a program owns the mouse — still copies on release. Biting proven both ways: re-registering the handler under another number fails three cases; moving the press listener back to the bubble phase fails exactly the stopped-propagation one |
 | trzsz does not garble ordinary output and does take over transfers | `frontend/src/lib/trzsz-pipe.test.ts` (uses the real `TrzszFilter`) |
 | `tsz`/`trz` move files byte-exact, end to end | `frontend/src/lib/trzsz-transfer.test.ts` replays the real protocol (banner, ACT, CFG, NUM, NAME, SIZE, DATA, MD5) against the shipped client, plus `fsaccess.test.ts` for the picker/file-handle contract |
 | the banner reaches trzsz, whole, even when the pump splits it | `frontend/src/lib/terminal-stream.test.ts` (`ServerOutputStream`, hold-back, 26-byte minimum, `#FAIL` fallback) and the split-banner case in `trzsz-transfer.test.ts` |
@@ -1086,7 +1147,7 @@ WebView2 COM + x/crypto/ssh + syso**。所以“精简 JS”不是主战场。gz
 | A multi-line paste is shown before anything runs | `paste.test.ts` (what counts as multi-line, in every line ending; leading blank lines stripped) and `paste-flow.test.ts`: one line goes straight through with no dialog, several lines stop at an editable prompt whose *edited* content is what gets sent, cancel sends nothing, and the terminal's own paste event takes the same path |
 | The paste dialog's keys mean what they say | `frontend/src/components/PromptDialog.test.ts`: Enter sends the box's current contents, Shift+Enter does not (it is the line break), Escape cancels, and an emptied box cannot be confirmed |
 | A cancelled transfer stays quiet — and cannot throw | `frontend/src/lib/transfer.test.ts`: the stop wordings across trzsz-go / trzsz-js / the pickers, Go panic text, and the library's own decode errors are recognised; the `process.stdout` shim is installed where a webview has none, writes the cursor/alt-screen cleanup through, and drops the narration; a real failure message still reaches the terminal |
-| A tab switch cannot leave the keyboard in a hidden pane | `frontend/src/lib/ime-focus.test.ts`: focus waits for the pane to be on screen (the old synchronous call landed in a `display: none` subtree, which is the state Windows reports as a disabled input method), a click inside the terminal still focuses at once, `reclaimFocus()` takes the keyboard back from a hidden pane, and a dialog field is left alone |
+| The keyboard cannot be left nowhere, in a hidden pane, or attached to a lost IME | `frontend/src/lib/ime-focus.test.ts` (13 cases): focus waits for the pane to be on screen, a click inside the terminal still focuses at once, every path that moves `activeTabId` — including the ones that assign it directly — ends in a focused visible terminal, a dialog field is left alone, a terminal that lost the keyboard to `<body>` (a menu item or dialog button removed with its host) takes it back, a real field that took it keeps it, a hidden pane is never pulled back in, a menu that stayed open long enough for the terminal's own check still hands the keyboard back when it closes, coming back to the window rebuilds the IME with a focus handoff when the terminal never lost DOM focus, an untouched terminal is left alone, and a handoff never blurs a composition or writes during a transfer. `TerminalPane.test.ts` pins that the pane fits itself but does not focus itself |
 | The shell's control keys never get stolen | `frontend/src/lib/shortcuts.test.ts` pins the boundary for `Ctrl+W/K/T/B` (and `Ctrl+C`/`Ctrl+V`): with the terminal focused they are **not** shortcuts, with focus elsewhere they run the app command, and the shifted form always does. `paste-flow.test.ts` → *keyboard ownership* proves that focus inside the pane is what the check sees, and that xterm is told to ignore exactly the combos the app claims |
 | Find searches the buffer, and the keys mean what they say | `frontend/src/components/TerminalPane.test.ts` → *in-tab find*: the bar stays shut until asked, shows only on the active tab, searches as you type, walks forward on Enter and back on Shift+Enter, shows the count the addon reported (`? / n` when the selected match is outside the 1000 the addon lists), re-searches when `Aa` is toggled, drops the highlights when the query is emptied, closes on Esc leaving the terminal focused, and leaves an IME-cancelling Esc alone. `shortcuts.test.ts` keeps `Ctrl+F` with the shell and `Ctrl+Shift+F` with the app. `frontend/src/lib/terminal-search.test.ts` runs the *real* addon against a real terminal buffer — which is the only place that catches the decorations being gated behind `allowProposedApi` — and `store-find.test.ts` pins the bar going away on every path that moves the active tab |
 | A GBK host reads as Chinese, a UTF-8 host reads as bytes | `frontend/src/lib/encoding.test.ts`: UTF-8 returns the *same* `Uint8Array` (identity, not equality — the byte-for-byte guarantees have one path), GBK `D6 D0 CE C4` decodes to 中文, a character split across two chunks survives, an encoding change drops the half-character and an unknown value falls back to UTF-8. `terminal-encoding.test.ts` proves it is actually *wired*: the same cases through a real bridge `paint()`, plus GoTerm's own strings bypassing the decoder |

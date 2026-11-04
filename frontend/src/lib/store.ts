@@ -6,7 +6,7 @@
  * enormous and Vue would walk it), so bridges live in a plain Map and only
  * their status is reactive.
  */
-import { computed, nextTick, reactive, watch } from 'vue';
+import { computed, reactive, watch } from 'vue';
 
 import { backend, errorMessage, fileBridgeApi } from './backend';
 import { bytesToBase64, formatBytes } from './bytes';
@@ -21,6 +21,7 @@ import { isMultilinePaste, lineCount, trimLeadingNewlines, trimTrailingBlankLine
 import { DEFAULT_WORD_SEPARATOR, createTerminalBridge, panePalette } from './terminal';
 import { isTerminalEncoding } from './encoding';
 import type { TerminalEncoding } from './encoding';
+import { isRendered } from './rendered';
 
 export type TabStatus = 'connecting' | 'open' | 'closed' | 'error';
 
@@ -975,6 +976,24 @@ watch(
   { flush: 'sync' },
 );
 
+// **One place gives the keyboard to a tab.** Every path that moves the active tab
+// ends here — a click on the strip, a new connection, a duplicate, a reconnect,
+// closing the last one — including the paths that assign `state.activeTabId`
+// directly and used to leave the pane to decide for itself.
+//
+// `flush: 'post'` is the point of it: `v-show` has swapped the panes by then, so
+// the terminal being focused is on screen. Focusing before that flush is a no-op
+// inside a `display: none` subtree, and the keyboard is left in the pane that is
+// about to be hidden — which is the state Windows paints as a disabled input
+// method (the red cross).
+watch(
+  () => state.activeTabId,
+  (tabId) => {
+    if (tabId) focusTabIfShown(tabId);
+  },
+  { flush: 'post' },
+);
+
 export function activateTab(tabId: string): void {
   const switched = state.activeTabId !== tabId;
   // The bar belongs to the pane it was opened on; another tab's counts would be a
@@ -995,61 +1014,81 @@ export function activateTab(tabId: string): void {
     // makes a TUI repaint the entire screen, and made clicking feel like it did
     // something to the remote side.
     if (switched) pushPaneSize(tab);
-    // Focus after the pane is on screen. `v-show` hides the old pane and shows this
-    // one on the *next* Vue flush, and focusing a textarea inside a `display: none`
-    // subtree does nothing in Chromium: the keyboard stays where it was, inside the
-    // pane that is about to disappear. That is the state Windows reports as
-    // "input method disabled" — the focused node is not being rendered, so an IME has
-    // nothing to attach to. The other caller (a click inside the terminal) already
-    // has its pane on screen, so it focuses immediately.
-    if (switched) void nextTick(() => focusIfShown(tab.id));
-    else bridge.focus();
+    // The keyboard follows the active tab from the watcher above, once the panes
+    // have swapped. The other caller (a click inside the terminal that is already
+    // showing) has nothing to wait for, so it focuses here and now.
+    if (!switched) bridge.focus();
   }
 }
 
 /**
  * Is this element actually being rendered?
  *
- * Walks the ancestors because `v-show` puts `display: none` on the pane wrapper,
- * not on the terminal's own element.
+ * `v-show` puts `display: none` on the pane wrapper, not on the terminal's own
+ * element, so the question is answered by walking up the ancestors — see
+ * `lib/rendered.ts`.
  */
-function isShown(element: Element | null): boolean {
-  let node: Element | null = element;
-  while (node) {
-    const style = getComputedStyle(node);
-    if (style.display === 'none' || style.visibility === 'hidden') return false;
-    node = node.parentElement;
-  }
-  return true;
-}
 
-/** Give a tab's terminal the keyboard — but only if it is on screen. */
-function focusIfShown(tabId: string): void {
+/**
+ * Give a tab's terminal the keyboard — but only if it is on screen.
+ *
+ * Exported because it is the rule, and the only other way to reach it is to move
+ * the active tab and watch Vue flush, which a unit test can do but should not have
+ * to guess at.
+ */
+export function focusTabIfShown(tabId: string): void {
   const bridge = bridges.get(tabId);
-  if (bridge && isShown(bridge.el)) bridge.focus();
+  if (bridge && isRendered(bridge.el)) bridge.focus();
 }
 
 /**
  * Put the keyboard back where the user thinks it is.
  *
- * Windows draws the IME as disabled (a cross, “已禁用输入法”) when the focused node
- * is not being rendered — which is exactly what a pane hidden by `v-show` is.
- * Nothing in the page can focus a textarea in that state, so unless something picks
- * the keyboard up again the only way out is to click back into the pane. Called when
- * the window, or the webview, comes back to the user.
+ * Windows draws the IME as disabled (a cross, “已禁用输入法”) in two states this app
+ * can cause, and they need different answers:
  *
- * It acts only when focus is nowhere or somewhere dead. A dialog's field, a button,
- * or the terminal itself is left alone: taking the keyboard from what the user was
- * using would be the app deciding it knows better.
+ *  - the focused node is not being rendered — a pane hidden by `v-show` — where
+ *    nothing in the page can focus anything, so the keyboard has to be given to a
+ *    pane that *is* on screen;
+ *  - the textarea never lost DOM focus at all, but the webview lost its input
+ *    context while the window was in the background. Then only a focus handoff
+ *    (`reattachKeyboard`) rebuilds the IME, which is what a click would do.
+ *
+ * `reattach` is asked for by the caller that knows the window has just come back.
+ * Without it this only acts when focus is nowhere or somewhere dead: a dialog's
+ * field, a button, or the terminal itself is left alone, because taking the
+ * keyboard from what the user was using would be the app deciding it knows better.
  */
-export function reclaimFocus(): void {
+export function reclaimFocus(options: { reattach?: boolean } = {}): void {
   const tab = state.tabs.find((candidate) => candidate.id === state.activeTabId);
   const bridge = tab ? bridges.get(tab.id) : undefined;
-  if (!bridge || !isShown(bridge.el)) return;
+  if (!bridge || !isRendered(bridge.el)) return;
 
   const focused = document.activeElement;
-  if (focused && focused !== document.body && isShown(focused)) return;
+  if (focused && bridge.el.contains(focused)) {
+    if (options.reattach) bridge.reattachKeyboard();
+    return;
+  }
+  if (focused && focused !== document.body && isRendered(focused)) return;
   bridge.focus();
+}
+
+/**
+ * Give the keyboard back once whatever had it is really gone.
+ *
+ * Closing a context menu or a dialog removes the button that was clicked, so focus
+ * falls to `<body>`: the window keeps receiving keys with nothing editable focused,
+ * and Windows paints the IME as disabled. A task, not a microtask — the removal
+ * happens on the Vue flush the same click scheduled, so asking sooner would still
+ * see the button in the DOM and the keyboard "somewhere".
+ */
+export function reclaimFocusSoon(): void {
+  setTimeout(() => {
+    // The window itself is in the background: nothing here should move the
+    // keyboard, and a focus report is still a sequence written into the PTY.
+    if (!document.hasFocus()) return;
+    reclaimFocus();
+  }, 0);
 }
 
 /**

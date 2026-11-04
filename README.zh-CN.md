@@ -1,7 +1,7 @@
 # GoTerm
 
 **一个 Golang + [Wails v3](https://wails.io) + [xterm.js](https://xtermjs.org) 实现的桌面SSH终端：**
-- `rz`/`sz`友好： 默认使用[`trz`/`tsz`](https://github.com/trzsz/trzsz.js) 传输文件，并兼容只有lrzsz的 `rz`/`sz`（ZMODEM）;
+- `rz`/`sz`友好： 默认使用[`trz`/`tsz`](https://github.com/trzsz/trzsz) 传输文件，并兼容只有lrzsz的 `rz`/`sz`（ZMODEM）;
 - ssh会话保活：支持长达24h的ssh会话保活(可设置)；
 - ssh会话复制：需要多个ssh连接时，在标签页上右键`Duplicate`即可；
 - 内置多种常规文档的关键字高亮；
@@ -32,7 +32,7 @@
   再开一个 shell，不做第二次登录。
 - GPU（WebGL）渲染，失败自动回退 DOM。
 - `Ctrl+Shift+F` 在本标签内搜索（`@xterm/addon-search`），计数是**缓冲区**的真实匹配数，不是屏幕上看得到的。
-- 选中即复制（只在松手时触发）、多行粘贴先弹可编辑确认框。
+- 选中即复制（只在松手时触发）；全屏程序自己菜单里的 *Copy* 也能用（程序用 OSC 52 把文本交给终端）；多行粘贴先弹可编辑确认框。
 - 远端编码：UTF-8（默认）或 GB18030 / GBK / GB2312 / Big5 / Shift_JIS，流式解码——一个汉字被 64 KiB
   输出块切开也不会变成两个替换字符。
 
@@ -68,7 +68,7 @@
 ## 安装
 
 从仓库的 [**Releases**](https://github.com/ykfq/goterm/releases) 页面下载
-`goterm-v1.0.0-windows-x64.exe` 和对应的 `.md5` / `.sha256`。那里的二进制是 GitHub Actions 根据 tag
+`goterm-v1.1.0-windows-x64.exe` 和对应的 `.md5` / `.sha256`。那里的二进制是 GitHub Actions 根据 tag
 构建的（[`.github/workflows/release.yml`](.github/workflows/release.yml)），不放进代码仓库。
 
 **单文件便携版**，没有安装包。WebView2（Wails 内嵌的浏览器引擎）在 Windows 10/11 上是自带的；
@@ -157,7 +157,8 @@ GUI 冒烟脚本用合成的鼠标键盘去驱动真正的 `bin\goterm.exe`，�
 既关标签又删词，三个手误就把会话弄没了。）
 
 **当全屏程序接管鼠标时**（`htop`、`tmux`）：右键归程序（它自己画菜单），`Shift+右键` 才是 GoTerm 的菜单；
-`Shift+拖选` 在本地选词，松手照样进剪贴板；`Ctrl+滚轮` 仍然缩放。
+`Shift+拖选` 在本地选词，松手照样进剪贴板；程序自己菜单里的 *Copy* 也生效（它用 OSC 52 把文本写出来，
+GoTerm 负责放到剪贴板）；`Ctrl+滚轮` 仍然缩放。
 
 **粘贴多行**会先弹一个可编辑的确认框——一整段文本就是一份没人读过的脚本。单行（带不带换行都行）
 直接进 shell。
@@ -232,6 +233,7 @@ frontend/src/components/                Vue 3 + Tailwind 4
   它会留在输入框里。
 - 会话硬上限到点就是断：默认 12 小时（或你设的值），并说明原因。
 - 换存储目录是下次启动生效，而且 GoTerm 不会替你搬文件。
+- 程序可以把文本写进剪贴板（OSC 52），但读不回本机剪贴板：读查询一律不答，这是故意的。
 - 保活能证明链路活着，但检测不出"TCP 还答但服务端已经僵住"的情况（无回应的探测约 45 秒 × 3 后被判定）。
 - 没有安装包（NSIS）、没有端口转发、不解析 `~/.ssh/config`、没有会话日志、没有每主机 profile。
   Linux/macOS 构建未验证，字体列表是内置的短名单。

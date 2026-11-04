@@ -126,6 +126,8 @@
 | 终端自身 `paste` 事件也接管（`Ctrl+V`/右键/浏览器粘贴同一条路） | ✅ |
 | **TUI 里 GoTerm 与程序各弹一套右键菜单，结果两个都点不动** → 程序申请鼠标后右键归程序 | ✅ 🧪 |
 | `Shift+右键` 开 GoTerm 菜单；`Shift+拖选` 本地选词（TUI 里"选中即复制"照旧） | ✅ |
+| **TUI 自己菜单里的 Copy 点了没反应** → 程序远程运行，只能靠 **OSC 52** 把文本交给终端；现在认这条写入（读剪贴板的查询一律不答） | ✅ 🧪 |
+| **TUI 里 `Shift+拖选` 后"选中即复制"没触发** → xterm 在"程序占着鼠标"时会掐掉那个 mousedown 的冒泡，手势改在捕获阶段记录 | ✅ 🧪 |
 | `Ctrl+滚轮` 缩放 | ✅ |
 | **`Ctrl+Shift+F` 在当前标签里搜文本**（右键菜单 "Find in terminal…" 同一入口） | ✅ 🧪 |
 
@@ -213,8 +215,8 @@
 
 | 需求 | 状态 |
 | --- | --- |
-| TUI 里 Shift+Alt 切中文失效、任务栏语言栏"英"字变灰（webview 合成层面） | ⏸️ |
-| **TUI 里切到别的标签或窗口再回来，输入法变成红叉"已禁用输入法"** → `nextTick` 后聚焦 + `reclaimFocus()` | ✅ 🧪 |
+| **TUI 里输入法变红叉"已禁用输入法"、切不回中文** → 三条焦点路一起补：切标签只在窗格可见后聚焦（`flush: 'post'` 收进 store 一处）、键盘掉到 `<body>` 时终端自己收回（菜单/对话框关掉时按钮跟着没了）、切回窗口时若终端仍占着焦点就做一次 focus 交接重建输入上下文 | ✅ 🧪 |
+| 上面那条修完 `Shift+Alt` 仍切不回中文 → 那就属于 OS 热键 / WebView2 合成层面，另做 | ⏸️ |
 
 ---
 
@@ -223,7 +225,8 @@
 | 事项 | 状态 |
 | --- | --- |
 | Go 侧 8 个有测试的包（共 12 个包；真实 SSH 服务器：认证、2FA、PTY、resize、双向二进制保真、断线、并发、保活不写 PTY、复制不二次登录、跳板机隧道、导出文件往返/篡改、DWM 属性回读、状态目录优先级与拒绳） | ✅ |
-| 前端 **373** 个 vitest 用例 / 38 文件（含真实 trzsz 客户端回放、真实 ZMODEM 会话对端、走真实终端管道的端到端） | ✅ |
+| 前端 **399** 个 vitest 用例 / 40 文件（含真实 trzsz 客户端回放、真实 ZMODEM 会话对端、走真实终端管道的端到端） | ✅ |
+| 前端测试把 `@xterm/addon-unicode-graphemes` 换成桩：上游 0.4.0 在 Node 下按 Buffer 池切片读错表头直接崩（应用里没有 `Buffer`，走 `atob` 分支没这个问题），见 DECISIONS §4 | ✅ |
 | `vue-tsc --noEmit` 严格模式 0 错误；`gofmt` / `go vet` 干净 | ✅ |
 | GUI 冒烟脚本：`gui-check` / `gui-demo` / `gui-transfer` / `frame-check` | ✅ |
 | 应用内 self-test（对本地 SSH 服务器跑真实协议栈） | ✅ |
@@ -239,21 +242,24 @@
 ```powershell
 go test ./...                                  # Go：SSH 栈、主机存储、密钥、绑定
 go vet ./... ; gofmt -l .                      # 应无输出
-npm --prefix frontend test                     # 373 个用例
+npm --prefix frontend test                     # 399 个用例
 npm --prefix frontend run typecheck            # vue-tsc，严格
 wails3 build                                   # -> bin\goterm.exe
 ```
 
 ### 发版流程（不要本地打包上传）
 
+当前版本 **1.1.0**（2026-11-04）：TUI 里的复制（OSC 52）与输入法红叉修复，见 §4 / §9。
+
 二进制不进代码仓库，由 GitHub Actions 构建并挂到 Release 上：
 
 ```powershell
-# 1) 把要发的版本写进 app.go 的 Version、build/config.yml 的 version、frontend/package.json
+# 1) 把要发的版本写进 app.go 的 Version、build/config.yml、build/windows/info.json（PE 文件属性）、
+#    frontend/package.json（连同 package-lock 的两处）；两份 README 的下载文件名也要改
 # 2) 打 tag 并推送（这一步会触发 workflow）
-git tag -a v1.0.1 -m "GoTerm 1.0.1"
+git tag -a v1.1.0 -m "GoTerm 1.1.0"
 git push origin main
-git push origin v1.0.1
+git push origin v1.1.0
 ```
 
 workflow 在 `windows-latest` 上装 Go（按 `go.mod`）+ Node 20 + 固定版 wails3，跑 `wails3 build`，
@@ -311,7 +317,8 @@ dist 压成 zip 再 embed（净省约 630 KB）、self-test 挪出生产包（�
    （含 `GREP_COLORS` 是否"只有粗体"）、anti-idle 三种 nudge 能否挡住堡垒机的活动检测（含
    TUI 里 `space-only` 是否真的续命、空格留下能否接受）、拖拽排序手感、Win11 的 caption/边框颜色、
    `dust` 柱状图是否逐行分开、TUI 竖边框那头发丝缝能否接受、搜索条位置与手感、
-   编码切 GB18030 后中文是否正常、会话硬上限到点是否真断。
+   编码切 GB18030 后中文是否正常、会话硬上限到点是否真断、TUI 里输入法红叉是否不再出现（菜单/对话框关掉后、
+   `Shift+拖选` 是否都进了剪贴板（**在 `tmux` 里跑 TUI 还不行**：透传包成 DCS，未解析）。
 2. **后台标签意外断线要不要提示**？现在所有断开都不弹，只写进面板与标签状态。
 3. IME 第一条（TUI 里 Shift+Alt 切不回中文）仍是 ⏸️，要不要继续做。
 4. ❌ 未做列表（per-host profile / `~/.ssh/config` / 端口转发 / 会话日志 / NSIS 安装包 /
