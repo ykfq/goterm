@@ -249,7 +249,8 @@ wails3 build                                   # -> bin\goterm.exe
 
 ### 发版流程（不要本地打包上传）
 
-当前版本 **1.1.0**（2026-11-04）：TUI 里的复制（OSC 52）与输入法红叉修复，见 §4 / §9。
+当前版本 **1.1.0**（2026-11-04 已发布：<https://github.com/ykfq/goterm/releases/tag/v1.1.0>）：
+TUI 里的复制（OSC 52）与输入法红叉修复，见 §4 / §9。
 
 二进制不进代码仓库，由 GitHub Actions 构建并挂到 Release 上：
 
