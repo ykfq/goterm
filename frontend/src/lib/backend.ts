@@ -65,8 +65,8 @@ export const backend = {
       })),
 
   sendInputB64: (sessionId: string, dataB64: string) => call('sendInput', () => App.SendInputB64(sessionId, dataB64)),
-  /** Hard cap on one connection, in hours. Go clamps and returns what it enforces. */
-  setSessionLifetime: (hours: number) => call('setSessionLifetime', () => App.SetSessionLifetime(hours)),
+  /** Idle window in hours: after this long without typed input, Go stops sending keepalives. */
+  setIdleTimeout: (hours: number) => call('setIdleTimeout', () => App.SetIdleTimeout(hours)),
   resizePTY: (sessionId: string, cols: number, rows: number) => call('resize', () => App.ResizePTY(sessionId, cols, rows)),
   closeSession: (sessionId: string) => call('closeSession', () => App.CloseSession(sessionId)),
   /**

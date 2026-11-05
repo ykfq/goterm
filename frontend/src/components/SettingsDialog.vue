@@ -29,10 +29,10 @@ import {
   setFontSize,
   setHighlightSets,
   setIdleKeepAlive,
+  setIdleTimeoutHours,
   setIdleNudge,
   setCopyOnSelect,
   setContinuousGlyphs,
-  setSessionHours,
   setTerminalEncoding,
   setWordSeparator,
   state,
@@ -271,15 +271,16 @@ function toggleContinuousGlyphs(event: Event): void {
   setContinuousGlyphs((event.target as HTMLInputElement).checked);
 }
 
-// --- session lifetime ------------------------------------------------------
+// --- idle keepalive window ---------------------------------------------------
 //
-// A hard cap on one connection, in whole hours. Go clamps to 1–24 and applies it
-// to open connections as well, so the number here is what is enforced, not a
-// hint kept in localStorage.
+// How long a session may sit without typed input before Go stops sending
+// keepalive signals. Whole hours; Go clamps to 1–744 and applies it to open
+// connections as well, so the number here is what is enforced, not a hint kept
+// in localStorage.
 
-function pickSessionHours(event: Event): void {
+function pickIdleTimeoutHours(event: Event): void {
   const hours = Number((event.target as HTMLInputElement).value);
-  setSessionHours(Number.isFinite(hours) ? hours : state.settings.sessionHours);
+  setIdleTimeoutHours(Number.isFinite(hours) ? hours : state.settings.idleTimeoutHours);
 }
 
 // --- remote text encoding --------------------------------------------------
@@ -679,31 +680,32 @@ async function importMsyn(): Promise<void> {
           </p>
         </section>
 
-        <!-- Session lifetime -->
+        <!-- Idle keepalive window -->
         <section v-show="tab === 'behaviour'" class="mb-6">
-          <h3 class="settings-section">Session lifetime</h3>
+          <h3 class="settings-section">Idle keepalive</h3>
           <p class="mb-2 text-[11px] leading-snug text-[var(--text-dim)]">
-            A connection is closed once it has been open this long, whatever is happening in it. The keepalive above
-            keeps a session from dying of someone else's idle timer; it is not a way to hold a login open
-            indefinitely, so this is a hard stop rather than another idle timer. Reconnecting starts a new session.
+            Keepalive signals are only sent while the session is being used. Once you have typed nothing for this
+            long, they stop: the connection is left to the server's own idle policy, so a login forgotten before a
+            weekend or a holiday goes away instead of staying online. During continuous use the window keeps
+            resetting, so a session you are using has no length limit.
           </p>
           <label class="flex flex-wrap items-center gap-2 text-[12px] text-[var(--text)]">
-            Close a session after
+            Stop keepalive after
             <input
               type="number"
               min="1"
-              max="24"
-              data-test="session-hours"
-              :value="state.settings.sessionHours"
+              max="744"
+              data-test="idle-timeout-hours"
+              :value="state.settings.idleTimeoutHours"
               class="focus-ring w-14 rounded border border-[var(--border)] bg-[var(--bg)] px-1.5 py-1 text-[12px] text-[var(--text)]"
-              @change="pickSessionHours"
+              @change="pickIdleTimeoutHours"
             />
-            hours
-            <span class="text-[11px] text-[var(--text-dim)]">(1–24; a duplicated tab shares the same clock)</span>
+            hours without input
+            <span class="text-[11px] text-[var(--text-dim)]">(1–744; a duplicated tab shares the same clock)</span>
           </label>
           <p class="mt-1 text-[11px] leading-snug text-[var(--text-dim)]">
-            Go enforces it from the moment the connection was made: lowering this ends a session that is already past
-            the new limit, and raising it does not restart anyone's clock.
+            Any keystroke restarts the countdown, and a session you are using is never cut off. Once the window is
+            reached the tab stays open; whether the connection actually drops is up to the server and its network.
           </p>
         </section>
 

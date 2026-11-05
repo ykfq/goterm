@@ -59,8 +59,9 @@ Hand the repository to any AI coding assistant with one line:
 - SSH keepalives (`keepalive@openssh.com`) — never an Enter, so nothing on the far side can run early.
 - Anti-idle for `TMOUT` / bastion activity timers, off by default: a space and a backspace (invisible),
   an empty line, or a bare space for the one case the first two cannot reach — a TUI.
-- **Every connection has a hard lifetime** (default 12 h, 1–24 h configurable, enforced in Go).
-  Keepalives prove a link is alive; they are not a way to renew a login forever.
+- **Keepalive stops after an idle window** (default 24 h, 1–744 h configurable, enforced in Go).
+  While you are typing it keeps the session alive; once you have been quiet that long the probes
+  stop and the server's own idle policy decides when the connection goes away.
 
 **The rest**
 - Dark and light themes; the window frame follows the theme (DWM). Keyword colouring with per-line
@@ -179,7 +180,7 @@ has read. One line (with or without its newline) goes straight through.
 | Section | What it does |
 | --- | --- |
 | Appearance | Terminal font (monospace only, enumerated from the system), **Block and box characters**, **Remote text encoding**, terminal background (six presets or any colour) |
-| Behaviour | Word separator (with a live preview of what double-click will select), copy on select, **Idle sessions** (anti-idle + which nudge), **Session lifetime** (1–24 h), **Storage** (where the files live) |
+| Behaviour | Word separator (with a live preview of what double-click will select), copy on select, **Idle sessions** (anti-idle + which nudge), **Idle keepalive** (stop after 1–744 h without input), **Storage** (where the files live) |
 | Highlighting | Five built-in keyword sets, custom keywords/regex with a colour, `.msyn` import |
 
 The light/dark theme is the sun/moon icon in the status bar; `Ctrl+=` / `Ctrl+-` / `Ctrl+0` change the
@@ -249,7 +250,8 @@ attempts, are in [`docs/DECISIONS.md`](docs/DECISIONS.md).
   keyboard-interactive challenge and no TOTP generation inside GoTerm.
 - Anti-idle cannot reset a timer that only counts *completed lines* unless you pick the empty-line nudge;
   the bare-space nudge is the only one that reaches a TUI, and it leaves a space behind.
-- Session lifetime is a hard cap: at 12 h (or whatever you set) the connection closes and says why.
+- Keepalive stops after the idle window (24 h by default): whether the connection then actually drops
+  is up to the server and the network. Typing restarts the window, so a session in use is never cut off.
 - Keepalives prove the link is alive; they cannot detect a frozen server that still answers TCP
   (an unanswered probe is noticed within ~45 s × 3).
 - Moving the storage folder applies on the next start, and GoTerm never copies your files for you.

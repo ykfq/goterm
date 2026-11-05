@@ -363,26 +363,24 @@ Every session sends an SSH keepalive every **45 s**: a global
 **A keepalive is not a way to keep a login open for ever.** The SSH keepalive is
 there so a session does not die of someone else's idle timer; the anti-idle is
 there because `TMOUT` counts input, not traffic. Neither is meant to outlast the
-organisation that set those timers, so every connection also carries a hard stop:
-**12 hours by default, 1–24 configurable** (Settings → Session lifetime). At the
-deadline Go closes the connection and says why — `maximum session lifetime
-reached (12 hours)`, with the usual Reconnect strip underneath.
+organisation that set those timers, so probing stops once the user has been quiet
+for the idle window: **24 hours by default, 1–744 configurable** (Settings →
+Idle keepalive). Go says so once in the notice stack — `idle for 24 hours —
+keepalive signals stopped, so the server may now drop this session` — and leaves
+the connection itself alone; the server's own idle policy decides whether it
+actually goes away.
 
-Three properties make it a limit rather than a suggestion:
+Three properties make it a window rather than a trap:
+- The clock belongs to the **connection**, not to the tab, and only typed input
+  resets it. A duplicate shares the clock — typing in either tab keeps the whole
+  keepalive tick.
+- Go clamps whatever it is told to 1–744 and reads 0 or nonsense as the 24-hour
+  default, so neither a stale UI nor a hand-edited settings file can ask for
+  "never stop" or for a decade-long window.
 
-- The clock belongs to the **connection**, not to the tab: a duplicated session is
-  another channel on the same login, so it shares the remaining time instead of
-  buying a new window.
-- Lowering the setting applies **immediately**, because the deadline is
-  `connected at + cap`, never `now + cap`. Twelve hours in, set it to one and the
-  session ends.
-- Go clamps whatever it is told to 1–24 and reads 0 or nonsense as the 12-hour
-  default, so neither a stale UI nor a hand-edited settings file can ask for an
-  endless session.
-
-Reconnecting is allowed and starts a new one: the property being kept is that
-GoTerm never silently holds a session past the limit, not that the limit is
-inescapable.
+Typing again after a pause resumes the probes if the connection is still there
+(the user is back; the link deserves defending again), and the notice stack says
+so.
 
 - **Nothing is written to the PTY.** A newline would be input, and a shell
 holding a half-typed command would run it. This is the one thing a keepalive
@@ -732,20 +730,21 @@ filter, including a live `::TRZSZ:TRANSFER:` takeover.
   `internal/hoststore/password_prompt_test.go`（标记、只用于本次且不落盘、2FA 追加）+
   `app_test.go`（标记断言）+ `frontend/src/lib/login-password.test.ts`（11 条：识别两种标记、
   拨号前先问、记住才存、取消＝标签关闭而不是报错、跳板机口令不会串到目标）。
-- **最长会话时长（硬上限）**：保活的作用是“发现链接已经死了”，不是“让一个登录永不结束”——否则就
-  是在对抗对面的会话策略。所以上限放在**连接**（`connRef`）上，而不是标签上：默认 12 小时，
-  1–24 小时可调，到点直接关掉连接并说明原因（`maximum session lifetime reached (12 hours)`，
-  通知里额外说一句“reconnect to continue”，已存主机的那条断开条本来就有 Reconnect 按钮）。
-  三个关键性质：①
-  **Duplicate 不续命**——复制出来的标签是同一连接的另一个 channel，时钟跟着连接走；
-  ② **调小立即生效**——到期时刻算的是 `连接创建时间 + 上限`，不是 `现在 + 上限`，所以“先开 12 小时、
-  第 11 小时再改成 1 小时”会当场结束，而不是重新起算（能往前推的上限不是上限）；
-  ③ **Go 自己夹紧**——`sshx.SessionLifetime()` 把任何输入夹到 1–24，0/负数按默认 12 处理，
-  所以手改配置文件或过期的前端都求不到一个“无限”。前端只是把选的值推过去（`SetSessionLifetime`），
-  Go 的 12 小时默认在 UI 没来得及推之前就已经在生效。测试：`internal/sshx/lifetime_test.go`
-  （到点真断+通知、Duplicate 共享时钟、调小立即结束、夹紧与文案），前端 `store-settings.test.ts`
-  与 `SettingsDialog.test.ts`（默认/夹紧/持久化/推给 Go）。破坏性验证：把 `armLifetime` 短路后
-  三条行为测试全部“timed out waiting for the cap”。
+- **闲置停发保活（不是硬拆会话）**：保活的作用是“发现链接已经死了”并保护正在用的会话，不是“让一个登录
+  永不结束”——否则就是在对抗对面的会话策略。所以阈值放在**连接**（`connRef`）上，而不是标签上：一条连接
+  **连续无输入**默认 24 小时（`DefaultIdleTimeoutHours`，1–744 可调）后停止发送 `keepalive@openssh.com`，
+  通知里说明“keepalive signals stopped, so the server may now drop this session”。之后是否真的断开
+  交给服务器/网络的空闲策略——GoTerm 不再自己到点强拆（原来的 `armLifetime`/`expire()` 已删除）。
+  四个关键性质：① **输入即续命**——只有 `Session.Write` 里的真实输入会重置窗口（`connRef.touch()`），
+  远端输出、窗口缩放、保活探测本身都不算；Duplicate 共享同一个连接时钟，任一标签页打字都能保住整条连接，
+  暂停/恢复通知各只发一次；② **调小立即生效**——窗口按“最后输入时间 + 阈值”算，已经闲置超过新阈值的
+  连接在下一个保活 tick 就停发，而正在使用的会话永远不受影响（没有“用满 N 小时必断”）；
+  ③ **恢复保活**——停发后仍有输入且连接还活着时立即恢复发送（`touch()` 直接清掉暂停位，通知文案
+  “keepalive signals resumed”），不必等下一个 45 秒 tick；④ **Go 自己夹紧**——`sshx.IdleTimeout()`
+  把任何输入夹到 1–744，0/负数按默认 24 处理，求不到“永不停止”。测试：`internal/sshx/idle_test.go`
+  （停发+通知+会话仍可用、持续输入不触发、通知只一条、Duplicate 共享时钟、调小作用于已开连接、夹紧与文案）
+  + `keepalive_test.go`（gate 关闭时不发也不计 strike、恢复后照常判死），前端 `store-settings.test.ts`
+  与 `SettingsDialog.test.ts`（默认 24 / 夹紧 1–744 / 持久化 / 旧 `sessionHours` 迁移 / 推给 Go）。
 - **保活换字符的来龙去脉**：先发回车 → 会把没提交的半行命令直接执行（红线）；改 `\x00`(NUL) 与 `\x1b[0n`(DSR) → 直连和 JumpServer **两边实测都照样超时**，`\x1b[0n` 进 PTY 后是 readline 眼里的垃圾字符；最终"空格+退格"才同时满足"是输入"和"提交不了任何东西"。
 - anti-idle 的六道闸门（有未提交输入不发空行、全屏程序不发、传输中不发、输出刚停 5 秒内不发、刷屏一次即本会话放弃并告知、用户真敲过命令后恢复）都是实机故障反推出来的。
 - **TUI 里怎么保活**：前两种 nudge 都在备用屏里闭嘴（全屏程序里空格/回车是有意义的按键），所以带输入框的 TUI（自己的闲置计时器）一直没有解。加的第三种 `space-only` 只发 `0x20`：它是真按键，所以能进 TUI，代价是**会留在输入框里**。因此它是显式选项（默认不变），选中时设置里当场写明代价与不该用的场合（`less` 翻页、`fzf` 选中、编辑器插入）。`nudgeBytes()` 是纯函数，三种模式的字节由测试钉住；`SettingsDialog` 的 select 改为把原始值交给 `setIdleNudge`（原先“非 line 即 space”的写法会把第三个值悄悄吞成默认），允许集合只有 `store.ts` 的 `IDLE_NUDGES` 一处。破坏性验证：去掉 tick 里的 `nudge !== 'space-only'` 豁免，备用屏那条测试立刻变红（`expected +0 to be 1`）。

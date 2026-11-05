@@ -195,19 +195,19 @@ func (a *App) ConnectHost(hostID string, cols, rows int, answers ConnectAnswers)
 	return sess.ID(), nil
 }
 
-// SetSessionLifetime sets the hard cap on one connection, in hours, and returns
-// the value actually in force. Go clamps whatever it is told to 1–24 and treats
-// 0 as "the default 12", so neither a stale UI nor a hand-edited settings file
-// can ask for an endless session.
+// SetIdleTimeout sets how long a connection may go without typed input before
+// GoTerm stops sending keepalive signals, in hours, and returns the value
+// actually in force. Go clamps whatever it is told to 1–744 and treats 0 as
+// "the default 24", so neither a stale UI nor a hand-edited settings file can
+// ask for an endless session.
 //
-// It reaches sessions that are already open, not only the next one, and the
-// deadline counts from when each connection was made — lowering the cap shortens
-// a long-running session rather than silently restarting its clock. This is the
-// one thing a keepalive is not allowed to defeat: keeping a link alive is about
-// noticing it died, not about holding a login open for ever.
-func (a *App) SetSessionLifetime(hours int) int {
-	d := sshx.SessionLifetime(hours)
-	a.mgr.SetMaxLifetime(d)
+// The window is measured from the last keystroke, not from when the connection
+// was made: a session that is being used is never touched by this, and a
+// session that is not is left to the server's own idle policy once the window
+// runs out. It reaches sessions that are already open, not only the next one.
+func (a *App) SetIdleTimeout(hours int) int {
+	d := sshx.IdleTimeout(hours)
+	a.mgr.SetIdleTimeout(d)
 	return int(d / time.Hour)
 }
 

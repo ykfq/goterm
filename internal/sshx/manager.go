@@ -68,34 +68,36 @@ type Manager struct {
 	hostKeys    *HostKeyStore
 	dialTimeout time.Duration
 
-	// maxLifetime is the hard cap on one connection. Zero would mean "no cap",
-	// which the app never sets — see SetMaxLifetime.
-	maxLifetime atomic.Int64
+	// idleTimeout is how long a connection may sit without typed input before
+	// the keepalive stops defending it. Zero would mean "never stop", which the
+	// app never sets — see SetIdleTimeout.
+	idleTimeout atomic.Int64
 
 	emitter atomic.Pointer[EmitFunc]
 }
 
-// Session lifetime bounds. The UI may choose within them; Go clamps to them
-// whatever it is told, so a stale or hand-edited setting cannot exceed the cap
-// and a keepalive cannot hold a login open for ever.
+// Keepalive idle bounds. The UI may choose within them; Go clamps to them
+// whatever it is told, so a stale or hand-edited setting cannot stop keepalive
+// defending an active session early, and a silly value cannot ask for a window
+// longer than a month.
 const (
-	DefaultSessionLifetimeHours = 12
-	MinSessionLifetimeHours     = 1
-	MaxSessionLifetimeHours     = 24
+	DefaultIdleTimeoutHours = 24
+	MinIdleTimeoutHours     = 1
+	MaxIdleTimeoutHours     = 744 // 31 days
 )
 
-// SessionLifetime turns the hours a user picked into the duration Go enforces,
+// IdleTimeout turns the hours a user picked into the idle window Go enforces,
 // clamping to the bounds above. 0 and negatives mean "use the default" rather
-// than "no limit": there is deliberately no way to ask for an endless session.
-func SessionLifetime(hours int) time.Duration {
+// than "never stop".
+func IdleTimeout(hours int) time.Duration {
 	if hours <= 0 {
-		hours = DefaultSessionLifetimeHours
+		hours = DefaultIdleTimeoutHours
 	}
-	if hours < MinSessionLifetimeHours {
-		hours = MinSessionLifetimeHours
+	if hours < MinIdleTimeoutHours {
+		hours = MinIdleTimeoutHours
 	}
-	if hours > MaxSessionLifetimeHours {
-		hours = MaxSessionLifetimeHours
+	if hours > MaxIdleTimeoutHours {
+		hours = MaxIdleTimeoutHours
 	}
 	return time.Duration(hours) * time.Hour
 }
@@ -107,21 +109,22 @@ func NewManager(hostKeys *HostKeyStore) *Manager {
 		hostKeys:    hostKeys,
 		dialTimeout: 20 * time.Second,
 	}
-	m.maxLifetime.Store(int64(SessionLifetime(DefaultSessionLifetimeHours)))
+	m.idleTimeout.Store(int64(IdleTimeout(DefaultIdleTimeoutHours)))
 	noop := EmitFunc(func(string, any) {})
 	m.emitter.Store(&noop)
 	return m
 }
 
-// SetMaxLifetime installs a new hard cap and applies it to sessions that are
-// already open, not just to the next connection.
+// SetIdleTimeout installs a new idle window and applies it to connections that
+// are already open, not just to the next one.
 //
-// The deadline is measured from when each connection was made, so lowering the
-// setting shortens a long-running session immediately; raising it gives the
-// remaining connections more room but still counts from their own start. Sessions
-// that are already past the new deadline end on the spot.
-func (m *Manager) SetMaxLifetime(d time.Duration) {
-	m.maxLifetime.Store(int64(d))
+// The window is measured from each connection's last typed input, so a session
+// that is being used is never touched by this; a session that has been quiet
+// longer than the new window stops probing keepalives at its next tick. The
+// change is applied in place: an active session keeps its own clock, it is only
+// the threshold that moves.
+func (m *Manager) SetIdleTimeout(d time.Duration) {
+	m.idleTimeout.Store(int64(d))
 
 	seen := make(map[*connRef]struct{})
 	m.mu.RLock()
@@ -132,13 +135,13 @@ func (m *Manager) SetMaxLifetime(d time.Duration) {
 	}
 	m.mu.RUnlock()
 	for link := range seen {
-		link.armLifetime(d)
+		link.setIdleTimeout(d)
 	}
 }
 
-// MaxLifetime is the cap currently in force.
-func (m *Manager) MaxLifetime() time.Duration {
-	return time.Duration(m.maxLifetime.Load())
+// IdleTimeout is the window currently in force.
+func (m *Manager) IdleTimeout() time.Duration {
+	return time.Duration(m.idleTimeout.Load())
 }
 
 // SetEmitter installs (or replaces) the event sink. A nil argument is ignored.
@@ -215,7 +218,7 @@ func (m *Manager) Connect(cfg Config) (*Session, error) {
 		closers = append(closers, bastion)
 	}
 
-	link := newConnRef(conn, bastion, closers, cfg.KeepAliveInterval(), m.MaxLifetime())
+	link := newConnRef(conn, bastion, closers, cfg.KeepAliveInterval(), m.IdleTimeout())
 	s := m.register(link, cfg, sh, fingerprint, started)
 
 	if tofuNote != "" {

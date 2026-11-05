@@ -127,6 +127,12 @@ func (s *Session) Write(p []byte) error {
 		return fmt.Errorf("write to %s: %w", s.info.Target, err)
 	}
 	s.bytesOut.Add(int64(len(p)))
+	if s.link != nil {
+		// Typed input is what the idle window is measured from. The clock lives
+		// on the connection, so a keystroke in any duplicated tab keeps the
+		// keepalive defending the whole link.
+		s.link.touch()
+	}
 	return nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -25,20 +26,23 @@ type connRef struct {
 	closers []io.Closer
 	every   time.Duration
 
-	// The hard stop. A keepalive exists to notice a dead link, not to hold a
-	// login open for ever: past `lifetime` this connection is closed whether or
-	// not anyone is still typing. The clock starts when the connection does, so a
-	// duplicated tab shares the remaining time rather than buying a new window.
-	lifetime time.Duration
-	started  time.Time
+	// The idle window. A keepalive exists to notice a dead link and to defend a
+	// session that someone is using; it is not a way to hold a login open for
+	// ever. Once the user has typed nothing for `idle`, the probes stop and the
+	// connection is left to the server's own idle policy — a login forgotten on
+	// Friday dies over the weekend instead of surviving until Monday.
+	//
+	// The clock is per connection (a duplicate shares it), and only typed input
+	// resets it: remote output, window resizes and the probes themselves do not
+	// count as "the user is here".
+	idleMu       sync.Mutex
+	idle         time.Duration
+	idlePaused   bool
+	lastActivity atomic.Int64 // unix nanoseconds of the last typed input
 
 	kaStop    chan struct{}
 	kaOnce    sync.Once
 	closeOnce sync.Once
-
-	lifeMu    sync.Mutex
-	lifeTimer *time.Timer
-	expired   bool
 
 	mu       sync.Mutex
 	refs     int
@@ -46,23 +50,20 @@ type connRef struct {
 }
 
 // newConnRef takes ownership of client, bastion and closers, counting one
-// reference for the session that was just opened on them. A positive lifetime
-// arms the hard stop immediately.
-func newConnRef(client, bastion *ssh.Client, closers []io.Closer, every, lifetime time.Duration) *connRef {
+// reference for the session that was just opened on them. A positive idle
+// window is enforced by the keepalive from the connection's first probe on.
+func newConnRef(client, bastion *ssh.Client, closers []io.Closer, every, idle time.Duration) *connRef {
 	l := &connRef{
 		client:   client,
 		bastion:  bastion,
 		closers:  closers,
 		every:    every,
-		started:  time.Now(),
+		idle:     idle,
 		kaStop:   make(chan struct{}),
 		refs:     1,
 		sessions: make(map[*Session]struct{}),
 	}
-	l.lifeMu.Lock()
-	l.lifetime = lifetime
-	l.lifeMu.Unlock()
-	l.armLifetime(lifetime)
+	l.lastActivity.Store(time.Now().UnixNano())
 	return l
 }
 
@@ -99,12 +100,6 @@ func (l *connRef) release() {
 func (l *connRef) close() {
 	l.closeOnce.Do(func() {
 		close(l.kaStop)
-		l.lifeMu.Lock()
-		if l.lifeTimer != nil {
-			l.lifeTimer.Stop()
-			l.lifeTimer = nil
-		}
-		l.lifeMu.Unlock()
 		if l.client != nil {
 			_ = l.client.Close()
 		}
@@ -116,65 +111,71 @@ func (l *connRef) close() {
 	})
 }
 
-// armLifetime (re)schedules the hard stop against the clock that started with the
-// connection. A non-positive duration disables it, which is only what the tests
-// ask for: the app always has a limit.
+// touch records typed input on any tab of this connection. Session.Write is the
+// one path keystrokes, pastes and trzsz control data take, so this is exactly
+// "the user is at the keyboard".
 //
-// Re-arming is how a lowered setting reaches sessions that are already open. The
-// deadline is `started + d`, never `now + d`, so lowering it shortens a session —
-// a limit that can be pushed forward by touching a setting is not a limit.
-func (l *connRef) armLifetime(d time.Duration) {
-	l.lifeMu.Lock()
-	defer l.lifeMu.Unlock()
-	if l.lifeTimer != nil {
-		l.lifeTimer.Stop()
-		l.lifeTimer = nil
+// If the idle window had parked the probes, typing resumes them immediately
+// rather than at the next tick: the resume should not depend on how the
+// keepalive interval happens to line up with the window.
+func (l *connRef) touch() {
+	l.lastActivity.Store(time.Now().UnixNano())
+	l.idleMu.Lock()
+	resumed := l.idlePaused
+	l.idlePaused = false
+	l.idleMu.Unlock()
+	if resumed {
+		l.announce("info", ": input detected — keepalive signals resumed")
 	}
-	l.lifetime = d
-	if d <= 0 || l.expired {
-		return
-	}
-	remaining := time.Until(l.started.Add(d))
-	if remaining <= 0 {
-		// Already past the new deadline (a much lower setting): stop now, off this
-		// goroutine, because expire takes the locks below.
-		go l.expire()
-		return
-	}
-	l.lifeTimer = time.AfterFunc(remaining, l.expire)
 }
 
-// expire ends every session on the connection because the cap was reached.
-//
-// It says why in both places the user looks — a notice for the moment it
-// happens, and the tab's own closed line afterwards — and it does not pretend to
-// be a network failure: reconnecting is a thing the user is allowed to do.
-func (l *connRef) expire() {
-	l.lifeMu.Lock()
-	if l.expired {
-		l.lifeMu.Unlock()
-		return
+// setIdleTimeout replaces the idle window; a settings change reaches
+// connections that are already open through this. There is no timer to rearm —
+// the next keepalive tick re-evaluates the window.
+func (l *connRef) setIdleTimeout(d time.Duration) {
+	l.idleMu.Lock()
+	l.idle = d
+	l.idleMu.Unlock()
+}
+
+// probeAllowed is the keepalive gate: true while the user has been present
+// within the idle window. Running out of the window is announced once, because
+// "the session may go away by itself" is worth one line where the user is
+// looking. Resuming is announced from touch, the moment the user is back.
+func (l *connRef) probeAllowed() bool {
+	l.idleMu.Lock()
+	limit := l.idle
+	paused := l.idlePaused
+	announce := false
+	if limit > 0 {
+		want := time.Since(time.Unix(0, l.lastActivity.Load())) >= limit
+		if want && !paused {
+			paused = true
+			l.idlePaused = true
+			announce = true
+		}
 	}
-	l.expired = true
-	lifetime := l.lifetime
-	if l.lifeTimer != nil {
-		l.lifeTimer.Stop()
-		l.lifeTimer = nil
+	l.idleMu.Unlock()
+
+	if announce {
+		l.announce("info", ": idle for "+humanLifetime(limit)+" — keepalive signals stopped, so the server may now drop this session")
 	}
+	return !paused
+}
+
+// announce pushes one line to every tab on this connection, the way fail does:
+// a shared connection has no single "the" session to talk to.
+func (l *connRef) announce(level, suffix string) {
 	l.mu.Lock()
 	list := make([]*Session, 0, len(l.sessions))
 	for s := range l.sessions {
 		list = append(list, s)
 	}
 	l.mu.Unlock()
-	l.lifeMu.Unlock()
 
-	label := humanLifetime(lifetime)
 	for _, s := range list {
-		s.mgr.notice(s.id, "info", s.Info().Target+": closed after "+label+", the maximum session lifetime — reconnect to continue")
-		s.finish("maximum session lifetime reached (" + label + ")")
+		s.mgr.notice(s.id, level, s.Info().Target+suffix)
 	}
-	l.close()
 }
 
 // humanLifetime is for the two sentences a user reads, so whole hours and whole
@@ -203,17 +204,18 @@ func humanLifetime(d time.Duration) string {
 // tunnel, and with it every session on it, whatever the target thinks.
 //
 // One loop per *connection*, not per tab: five duplicates must not mean five
-// probes every interval.
+// probes every interval. Both loops consult the same idle gate, so a duplicated
+// tab neither buys extra probing nor gets its own pause notice.
 func (l *connRef) startKeepAlive() {
 	l.kaOnce.Do(func() {
 		if l.every <= 0 {
 			return
 		}
-		go keepAlive(l.kaStop, l.client, l.every, keepAliveStrikes, func(reason string) {
+		go keepAlive(l.kaStop, l.client, l.every, keepAliveStrikes, l.probeAllowed, func(reason string) {
 			l.fail("server " + reason)
 		})
 		if l.bastion != nil {
-			go keepAlive(l.kaStop, l.bastion, l.every, keepAliveStrikes, func(reason string) {
+			go keepAlive(l.kaStop, l.bastion, l.every, keepAliveStrikes, l.probeAllowed, func(reason string) {
 				l.fail("jump host " + reason)
 			})
 		}

@@ -14,7 +14,7 @@ const backendMock = vi.hoisted(() => ({
   fileBridgeApi: vi.fn(),
   // The session-lifetime setting is pushed to Go as well as stored; without this
   // the setter would throw here rather than quietly falling back.
-  setSessionLifetime: vi.fn(async (hours: number) => hours),
+  setIdleTimeout: vi.fn(async (hours: number) => hours),
   // Storage lives in Go: the dialog only renders it and asks for changes.
   storage: vi.fn(async () => storageInfo()),
   setStorageDir: vi.fn(async (dir: string) =>
@@ -269,21 +269,21 @@ describe('SettingsDialog', () => {
     expect(JSON.parse(localStorage.getItem('goterm.settings') ?? '{}').encoding).toBe('gb18030');
   });
 
-  it('sets the session lifetime, and tells Go what it now enforces', async () => {
-    // The number is not decoration: Go holds the cap, so the dialog has to push
-    // it. A value that only lived in localStorage would look right and do nothing.
-    // `bridgeReady` is what marks "there is a Go behind this window" — outside
-    // that, pushing is pointless and is skipped on purpose.
+  it('sets the idle keepalive window, and tells Go what it now enforces', async () => {
+    // The number is not decoration: Go holds the window, so the dialog has to
+    // push it. A value that only lived in localStorage would look right and do
+    // nothing. `bridgeReady` is what marks "there is a Go behind this window" —
+    // outside that, pushing is pointless and is skipped on purpose.
     state.bridgeReady = true;
     try {
       const wrapper = await mountDialog();
-      const field = wrapper.get('[data-test="session-hours"]');
-      expect((field.element as HTMLInputElement).value).toBe('12');
+      const field = wrapper.get('[data-test="idle-timeout-hours"]');
+      expect((field.element as HTMLInputElement).value).toBe('24');
 
       await field.setValue('6');
-      expect(state.settings.sessionHours).toBe(6);
-      expect(JSON.parse(localStorage.getItem('goterm.settings') ?? '{}').sessionHours).toBe(6);
-      expect(backendMock.setSessionLifetime).toHaveBeenCalledWith(6);
+      expect(state.settings.idleTimeoutHours).toBe(6);
+      expect(JSON.parse(localStorage.getItem('goterm.settings') ?? '{}').idleTimeoutHours).toBe(6);
+      expect(backendMock.setIdleTimeout).toHaveBeenCalledWith(6);
     } finally {
       state.bridgeReady = false;
     }

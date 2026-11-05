@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -48,7 +49,7 @@ func TestKeepAlivePokesUntilItIsStopped(t *testing.T) {
 	stop := make(chan struct{})
 	dead := make(chan string, 1)
 
-	go keepAlive(stop, sender, 10*time.Millisecond, keepAliveStrikes, func(reason string) { dead <- reason })
+	go keepAlive(stop, sender, 10*time.Millisecond, keepAliveStrikes, nil, func(reason string) { dead <- reason })
 	deadline := time.Now().Add(2 * time.Second)
 	for sender.count() < 3 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
@@ -80,7 +81,7 @@ func TestKeepAliveDeclaresTheLinkDeadAfterStrikes(t *testing.T) {
 	stop := make(chan struct{})
 	dead := make(chan string, 1)
 
-	keepAlive(stop, sender, 5*time.Millisecond, keepAliveStrikes, func(reason string) { dead <- reason })
+	keepAlive(stop, sender, 5*time.Millisecond, keepAliveStrikes, nil, func(reason string) { dead <- reason })
 
 	select {
 	case reason := <-dead:
@@ -97,7 +98,7 @@ func TestKeepAliveDeclaresTheLinkDeadAfterStrikes(t *testing.T) {
 
 func TestKeepAliveCanBeTurnedOff(t *testing.T) {
 	sender := &recordingSender{}
-	keepAlive(make(chan struct{}), sender, 0, keepAliveStrikes, func(string) {})
+	keepAlive(make(chan struct{}), sender, 0, keepAliveStrikes, nil, func(string) {})
 	if sender.count() != 0 {
 		t.Fatalf("a disabled keepalive sent %d probes", sender.count())
 	}
@@ -173,4 +174,72 @@ func TestKeepAliveIntervalDefaultsAndFloors(t *testing.T) {
 	if got := (Config{KeepAliveSeconds: -0}).KeepAliveInterval(); got != DefaultKeepAlive {
 		t.Fatalf("zero = %s, want the default", got)
 	}
+}
+
+// A closed gate must park the loop, not end it: the connection is idle, not
+// gone, and the probes have to come back the moment the gate opens again.
+func TestKeepAliveParksWhileTheGateIsClosed(t *testing.T) {
+	sender := &recordingSender{}
+	stop := make(chan struct{})
+	dead := make(chan string, 1)
+	var open atomic.Bool
+	open.Store(false)
+
+	go keepAlive(stop, sender, 5*time.Millisecond, keepAliveStrikes, open.Load, func(reason string) { dead <- reason })
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && sender.count() < 5 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	parked := sender.count()
+	if parked > 1 {
+		t.Fatalf("a closed gate still sent %d probes", parked)
+	}
+
+	open.Store(true)
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && sender.count() < parked+3 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	close(stop)
+	if got := sender.count(); got < parked+3 {
+		t.Fatalf("an opened gate sent only %d probes (parked at %d)", got, parked)
+	}
+	select {
+	case reason := <-dead:
+		t.Fatalf("a healthy connection was declared dead: %s", reason)
+	default:
+	}
+}
+
+// A pause is not a strike. A failing peer behind a closed gate must not
+// accumulate failures while the user is away, and once the gate opens the link
+// is judged on fresh probes only.
+func TestPausedTicksDoNotCountAsStrikes(t *testing.T) {
+	sender := &recordingSender{err: errors.New("use of closed network connection")}
+	stop := make(chan struct{})
+	dead := make(chan string, 1)
+	var open atomic.Bool // starts closed: the user is away
+
+	go keepAlive(stop, sender, 5*time.Millisecond, keepAliveStrikes, open.Load, func(reason string) { dead <- reason })
+
+	// Plenty of ticks while paused; a failing sender behind a closed gate must
+	// neither probe nor die.
+	time.Sleep(60 * time.Millisecond)
+	if got := sender.count(); got != 0 {
+		t.Fatalf("a paused loop sent %d probes", got)
+	}
+	select {
+	case reason := <-dead:
+		t.Fatalf("paused ticks were counted as strikes: %s", reason)
+	default:
+	}
+
+	// The user is back: now the failing peer must be noticed in the usual way.
+	open.Store(true)
+	select {
+	case <-dead:
+	case <-time.After(2 * time.Second):
+		t.Fatal("an always-failing peer was never declared dead once unpaused")
+	}
+	close(stop)
 }

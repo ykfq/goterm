@@ -208,43 +208,53 @@ describe('block and box glyphs', () => {
   });
 });
 
-describe('session lifetime', () => {
-  it('starts at 12 hours — never at "no limit"', async () => {
+describe('idle keepalive window', () => {
+  it('starts at 24 hours — never at "no window"', async () => {
     const store = await freshStore();
-    expect(store.state.settings.sessionHours).toBe(12);
+    expect(store.state.settings.idleTimeoutHours).toBe(24);
   });
 
   it('clamps what a hand-edited file says', async () => {
-    // There is no way to ask for an endless session, in either direction.
-    localStorage.setItem(KEY, JSON.stringify({ settingsVersion: 2, sessionHours: 99 }));
-    expect((await freshStore()).state.settings.sessionHours).toBe(24);
+    // There is no way to ask for an endless window, in either direction.
+    localStorage.setItem(KEY, JSON.stringify({ settingsVersion: 3, idleTimeoutHours: 5000 }));
+    expect((await freshStore()).state.settings.idleTimeoutHours).toBe(744);
 
-    localStorage.setItem(KEY, JSON.stringify({ settingsVersion: 2, sessionHours: 0 }));
-    expect((await freshStore()).state.settings.sessionHours).toBe(12);
+    localStorage.setItem(KEY, JSON.stringify({ settingsVersion: 3, idleTimeoutHours: 0 }));
+    expect((await freshStore()).state.settings.idleTimeoutHours).toBe(24);
 
-    localStorage.setItem(KEY, JSON.stringify({ settingsVersion: 2, sessionHours: 'forever' }));
-    expect((await freshStore()).state.settings.sessionHours).toBe(12);
+    localStorage.setItem(KEY, JSON.stringify({ settingsVersion: 3, idleTimeoutHours: 'forever' }));
+    expect((await freshStore()).state.settings.idleTimeoutHours).toBe(24);
 
-    localStorage.setItem(KEY, JSON.stringify({ settingsVersion: 2, sessionHours: 2.6 }));
-    expect((await freshStore()).state.settings.sessionHours).toBe(3);
+    localStorage.setItem(KEY, JSON.stringify({ settingsVersion: 3, idleTimeoutHours: 2.6 }));
+    expect((await freshStore()).state.settings.idleTimeoutHours).toBe(3);
+  });
+
+  it('carries the old per-connection lifetime over as the idle window', async () => {
+    // v3 turned the absolute cap ("sessionHours") into an idle window. The
+    // number meant "a long session" to whoever chose it, and the new meaning
+    // keeps that intent.
+    localStorage.setItem(KEY, JSON.stringify({ settingsVersion: 2, sessionHours: 8 }));
+    expect((await freshStore()).state.settings.idleTimeoutHours).toBe(8);
   });
 
   it('persists the chosen value, clamps on the way in, and resets to the default', async () => {
     const store = await freshStore();
 
-    store.setSessionHours(2);
-    expect(store.state.settings.sessionHours).toBe(2);
-    expect(JSON.parse(localStorage.getItem(KEY) ?? '{}').sessionHours).toBe(2);
+    store.setIdleTimeoutHours(2);
+    expect(store.state.settings.idleTimeoutHours).toBe(2);
+    expect(JSON.parse(localStorage.getItem(KEY) ?? '{}').idleTimeoutHours).toBe(2);
 
-    store.setSessionHours(40);
-    expect(store.state.settings.sessionHours).toBe(24);
-    expect(JSON.parse(localStorage.getItem(KEY) ?? '{}').sessionHours).toBe(24);
+    store.setIdleTimeoutHours(5000);
+    expect(store.state.settings.idleTimeoutHours).toBe(744);
+    expect(JSON.parse(localStorage.getItem(KEY) ?? '{}').idleTimeoutHours).toBe(744);
 
-    store.setSessionHours(0);
-    expect(store.state.settings.sessionHours).toBe(12);
+    store.setIdleTimeoutHours(0);
+    expect(store.state.settings.idleTimeoutHours).toBe(24);
 
-    store.setSessionHours(6);
+    store.setIdleTimeoutHours(6);
     store.resetSettings();
-    expect(store.state.settings.sessionHours).toBe(12);
+    expect(store.state.settings.idleTimeoutHours).toBe(24);
+  });
+
   });
 });

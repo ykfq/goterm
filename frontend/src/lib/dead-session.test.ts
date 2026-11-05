@@ -39,7 +39,7 @@ vi.mock('./backend', () => ({
   backend: {
     sendInputB64: vi.fn(async () => undefined),
     resizePTY: vi.fn(async () => undefined),
-    setSessionLifetime: vi.fn(async (hours: number) => hours),
+    setIdleTimeout: vi.fn(async (hours: number) => hours),
     fonts: vi.fn(async () => []),
   },
   fileBridgeApi: () => ({}),

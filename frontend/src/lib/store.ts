@@ -85,17 +85,19 @@ interface Settings {
    */
   idleNudge: IdleNudge;
   /**
-   * Hard cap on one connection, in hours. Go enforces it from the moment the
-   * connection is made and clamps it to 1–24, so it is a limit rather than a
-   * suggestion: the keepalive cannot hold a login open past it, and a duplicated
-   * tab shares the remaining time instead of buying a new window.
+   * Hours a connection may sit without typed input before GoTerm stops sending
+   * keepalive signals. Go clamps it to 1–744 and applies it from the last
+   * keystroke, so this is a window in which the user may be away — not a cap on
+   * how long a session in use may live. Go enforces it; a duplicated tab shares
+   * the same clock.
    */
-  sessionHours: number;
+  idleTimeoutHours: number;
   /**
    * Put a finished mouse selection straight on the clipboard. Off means only
    * Ctrl+Shift+C copies.
    */
   copyOnSelect: boolean;
+  /**
   /**
    * Fill the whole cell with block and box-drawing characters.
    *
@@ -124,7 +126,7 @@ function defaultSettings(): Settings {
     customRules: [],
     idleKeepAliveMinutes: 0,
     idleNudge: 'space',
-    sessionHours: 12,
+    idleTimeoutHours: 24,
     copyOnSelect: true,
     continuousGlyphs: false,
   };
@@ -139,22 +141,23 @@ function clampMinutes(value: unknown): number {
 }
 
 /**
- * Hours a connection may stay open, clamped to Go's bounds.
+ * Hours a connection may be idle before keepalive stops defending it, clamped
+ * to Go's bounds.
  *
- * There is no "off": the cap exists so a keepalive cannot turn into an endless
- * login, and a missing value means the 12-hour default rather than unlimited. Go
+ * There is no "off": the modal point of the setting is "let a forgotten login
+ * die", and a missing value means the 24-hour default rather than unlimited. Go
  * clamps independently, so this is only about showing the user a true number.
  */
-const SESSION_HOURS_MIN = 1;
-const SESSION_HOURS_MAX = 24;
-const SESSION_HOURS_DEFAULT = 12;
+const IDLE_TIMEOUT_HOURS_MIN = 1;
+const IDLE_TIMEOUT_HOURS_MAX = 744;
+const IDLE_TIMEOUT_HOURS_DEFAULT = 24;
 
-function clampSessionHours(value: unknown): number {
-  // Zero and negatives mean "unset", not "an hour": the same reading Go gives
-  // them, so a hand-edited file cannot end up with a tighter cap than the person
-  // who wrote it intended.
-  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return SESSION_HOURS_DEFAULT;
-  return Math.min(SESSION_HOURS_MAX, Math.max(SESSION_HOURS_MIN, Math.round(value)));
+function clampIdleTimeoutHours(value: unknown): number {
+  // Zero and negatives mean "unset", not "one hour": the same reading Go gives
+  // them, so a hand-edited file cannot end up with a tighter window than the
+  // person who wrote it intended.
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return IDLE_TIMEOUT_HOURS_DEFAULT;
+  return Math.min(IDLE_TIMEOUT_HOURS_MAX, Math.max(IDLE_TIMEOUT_HOURS_MIN, Math.round(value)));
 }
 
 /**
@@ -223,7 +226,13 @@ function loadSettings(): Settings {
       customRules: sanitiseRules(parsed.customRules),
       idleKeepAliveMinutes: clampMinutes(parsed.idleKeepAliveMinutes),
       idleNudge: toIdleNudge(parsed.idleNudge),
-      sessionHours: clampSessionHours(parsed.sessionHours),
+      // The setting used to be a hard per-connection lifetime under the key
+      // "sessionHours". It now means the idle window, and an old value carries
+      // over as-is: someone who asked for 24 hours wanted a long-lived session
+      // either way.
+      idleTimeoutHours: clampIdleTimeoutHours(
+        parsed.idleTimeoutHours ?? (parsed as { sessionHours?: unknown }).sessionHours,
+      ),
       copyOnSelect: typeof parsed.copyOnSelect === 'boolean' ? parsed.copyOnSelect : fallback.copyOnSelect,
     continuousGlyphs:
       typeof parsed.continuousGlyphs === 'boolean' ? parsed.continuousGlyphs : fallback.continuousGlyphs,
@@ -405,32 +414,34 @@ export function setIdleKeepAlive(minutes: number): void {
 }
 
 /**
- * Hand the current cap to Go, which is where it is actually enforced.
+ * Hand the current idle window to Go, which is where it is actually enforced.
  *
  * Skipped when there is no bridge: a plain browser (or a headless test) has no
  * GoTerm behind it to enforce anything, and the value is still in settings.json
- * for the next real start. A failed call is equally quiet — Go's own 12-hour
- * default is already a cap, so the worst case is "the default applies until the
- * next successful push" rather than "no limit at all".
+ * for the next real start. A failed call is equally quiet — Go's own 24-hour
+ * default is already a window, so the worst case is "the default applies until
+ * the next successful push" rather than "no window at all".
  */
-function pushSessionHours(): void {
+function pushIdleTimeout(): void {
   if (!state.bridgeReady) return;
-  void backend.setSessionLifetime(state.settings.sessionHours).catch(() => undefined);
+  void backend.setIdleTimeout(state.settings.idleTimeoutHours).catch(() => undefined);
 }
 
 /**
- * How long one connection may stay open, in hours (1–24).
+ * Hours a connection may sit without typed input before keepalive stops
+ * defending it (1–744).
  *
- * Deliberately has no "off": the anti-idle and the SSH keepalive exist so a
- * session does not die of someone else's idle timer, and the same machinery must
- * not become a way to keep a login alive indefinitely. Go holds the cap and
- * applies it to connections that are already up, so this call is the whole
- * setting — there is no per-session state to keep in step.
+ * Deliberately has no "off": a keepalive exists so a session in use does not
+ * die of someone else's idle timer, and once the user has been away past this
+ * window the session should be left to the server instead of being held open
+ * indefinitely. Go holds the window and applies it to connections that are
+ * already up, so this call is the whole setting — there is no per-session state
+ * to keep in step.
  */
-export function setSessionHours(hours: number): void {
-  state.settings.sessionHours = clampSessionHours(hours);
+export function setIdleTimeoutHours(hours: number): void {
+  state.settings.idleTimeoutHours = clampIdleTimeoutHours(hours);
   saveSettings();
-  pushSessionHours();
+  pushIdleTimeout();
 }
 
 /**
@@ -482,7 +493,7 @@ export function resetSettings(): void {
   setBackgroundColor(defaults.background);
   setCustomRules(defaults.customRules);
   setIdleKeepAlive(defaults.idleKeepAliveMinutes);
-  setSessionHours(defaults.sessionHours);
+  setIdleTimeoutHours(defaults.idleTimeoutHours);
   setIdleNudge(defaults.idleNudge);
   setCopyOnSelect(defaults.copyOnSelect);
   setContinuousGlyphs(defaults.continuousGlyphs);
@@ -705,9 +716,9 @@ export async function bootstrap(): Promise<boolean> {
   if (state.bridgeReady) {
     applyWindowTheme();
     // Settings Go enforces rather than renders are pushed once the bridge is known
-    // to exist: the session lifetime has to be in force before the first
-    // connection, or the cap would only start applying after a restart.
-    pushSessionHours();
+    // to exist: the idle window has to be in force before the first connection,
+    // or the default would only apply until the user opens Settings.
+    pushIdleTimeout();
   }
   installFilePickers(state.bridgeReady ? fileBridgeApi() : null);
   state.filePickerMode = pickerMode();
