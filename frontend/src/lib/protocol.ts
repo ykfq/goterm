@@ -7,6 +7,7 @@
 export const EVENT_DATA = 'ssh:data';
 export const EVENT_CLOSED = 'ssh:closed';
 export const EVENT_NOTICE = 'ssh:notice';
+export const EVENT_SFTP_PROGRESS = 'sftp:progress';
 
 export interface DataEvent {
   sessionId: string;
@@ -52,6 +53,37 @@ export interface NoticeEvent {
   message: string;
   /** An action name the UI knows how to render; anything else is ignored. */
   action?: string;
+}
+
+/* --- sftp ----------------------------------------------------------------- */
+
+/** One row of a remote directory listing (internal/sftpx.Entry). */
+export interface SFTPEntry {
+  name: string;
+  path: string;
+  dir: boolean;
+  size: number;
+  mode: string;
+  /** Remote mtime, RFC 3339. */
+  modTime: string;
+}
+
+export interface SFTPListing {
+  /** The resolved directory the entries came from. */
+  path: string;
+  entries: SFTPEntry[];
+}
+
+/**
+ * One progress tick for one file. `done` reaches `total` on the final tick,
+ * which is what the panel uses to settle a row at 100%.
+ */
+export interface SFTPProgressEvent {
+  sessionId: string;
+  direction: 'upload' | 'download';
+  name: string;
+  done: number;
+  total: number;
 }
 
 export interface AppInfo {

@@ -2,7 +2,7 @@
 import { Plus, X } from 'lucide-vue-next';
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 
-import { activateTab, closeTab, duplicateTab, moveTab, reclaimFocusSoon, reconnect, state } from '../lib/store';
+import { activateTab, closeTab, duplicateTab, moveTab, openSftp, reclaimFocusSoon, reconnect, state } from '../lib/store';
 import type { Tab } from '../lib/store';
 
 const emit = defineEmits<{ (event: 'quick-connect'): void }>();
@@ -73,12 +73,14 @@ const menuTab = computed(() => state.tabs.find((tab) => tab.id === menu.value?.t
 /** Ad-hoc sessions kept no password, so there is nothing to dial again. */
 const canReconnect = computed(() => Boolean(menuTab.value?.hostId));
 const canDuplicate = computed(() => menuTab.value?.status === 'open' && Boolean(menuTab.value?.sessionId));
+/** Same requirement: SFTP needs a live SSH connection, not a saved host. */
+const canBrowseFiles = canDuplicate;
 
 function openTabMenu(event: MouseEvent, tab: Tab): void {
   event.preventDefault();
   activateTab(tab.id);
   const width = 210;
-  const height = 88;
+  const height = 120;
   menu.value = {
     x: Math.min(event.clientX, window.innerWidth - width - 8),
     y: Math.min(event.clientY, window.innerHeight - height - 8),
@@ -182,6 +184,16 @@ onBeforeUnmount(() => {
       data-test="tab-menu"
       @pointerdown.stop
     >
+      <button
+        class="flex w-full items-center justify-between px-3 py-1.5 text-left hover:bg-[var(--panel-2)]"
+        :class="{ 'opacity-45': !canBrowseFiles, 'cursor-not-allowed': !canBrowseFiles }"
+        :disabled="!canBrowseFiles"
+        :title="canBrowseFiles ? 'Browse and transfer files over SFTP' : 'Only a connected session can browse files'"
+        data-test="tab-sftp"
+        @click="run(menu?.tabId, openSftp)"
+      >
+        Browse files…
+      </button>
       <button
         class="flex w-full items-center justify-between px-3 py-1.5 text-left hover:bg-[var(--panel-2)]"
         :class="{ 'opacity-45': !canDuplicate, 'cursor-not-allowed': !canDuplicate }"

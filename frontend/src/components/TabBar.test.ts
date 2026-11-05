@@ -12,6 +12,7 @@ const backendMock = vi.hoisted(() => ({
   listSessions: vi.fn(async () => []),
   knownHosts: vi.fn(async () => []),
   listHosts: vi.fn(async () => []),
+  sftpList: vi.fn(async () => ({ path: '/home/me', entries: [] })),
 }));
 
 vi.mock('../lib/backend', () => ({
@@ -87,22 +88,37 @@ describe('TabBar colours', () => {
 });
 
 describe('TabBar menu', () => {
-  it('offers Reconnect and Duplicate on a connected tab', async () => {
+  it('offers Browse files, Duplicate and Reconnect on a connected tab', async () => {
     const wrapper = mount(TabBar);
     await openMenu(wrapper);
+    const sftp = wrapper.get('[data-test="tab-sftp"]');
     const reconnect = wrapper.get('[data-test="tab-reconnect"]');
     const duplicate = wrapper.get('[data-test="tab-duplicate"]');
+    expect(sftp.text()).toContain('Browse files');
     expect(reconnect.text()).toContain('Reconnect');
     expect(duplicate.text()).toContain('Duplicate');
+    expect(sftp.attributes('disabled')).toBeUndefined();
     expect(reconnect.attributes('disabled')).toBeUndefined();
     expect(duplicate.attributes('disabled')).toBeUndefined();
     // Duplicate first: it is what an open tab gets asked for most, and it is the
     // one that costs nothing (no second login). Pinned because order is the kind
     // of thing a later refactor swaps back without any test noticing.
     expect(wrapper.findAll('[data-test="tab-menu"] button').map((item) => item.attributes('data-test'))).toEqual([
+      'tab-sftp',
       'tab-duplicate',
       'tab-reconnect',
     ]);
+  });
+
+  it('opens the file browser on the connection the tab is already using', async () => {
+    const wrapper = mount(TabBar);
+    await openMenu(wrapper);
+    await wrapper.get('[data-test="tab-sftp"]').trigger('click');
+    await flushPromises();
+
+    expect(state.sftp.open).toBe(true);
+    expect(state.sftp.sessionId).toBe('sess-1');
+    expect(backendMock.sftpList).toHaveBeenCalledWith('sess-1', '');
   });
 
   it('duplicates onto the same connection instead of logging in again', async () => {
@@ -132,6 +148,9 @@ describe('TabBar menu', () => {
     const wrapper = mount(TabBar);
     await openMenu(wrapper);
     expect(wrapper.get('[data-test="tab-duplicate"]').attributes('disabled')).toBeDefined();
+    // SFTP needs the same live connection Duplicate shares, so it is offered or
+    // withheld together.
+    expect(wrapper.get('[data-test="tab-sftp"]').attributes('disabled')).toBeDefined();
     // Reconnect is still available: that is what a closed saved host needs most.
     expect(wrapper.get('[data-test="tab-reconnect"]').attributes('disabled')).toBeUndefined();
   });

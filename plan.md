@@ -169,6 +169,10 @@
 | 传输期间键盘输入被收起时，第一次要说明一句 | ✅ |
 | **lrzsz 传大文件没有任何状态输出** → **vendor 上游 `TextProgressBar`**，`rz`/`sz` 画出与 `trz`/`tsz` 完全相同的终端进度行 | ✅ 🧪 |
 | ⚠️ 缺口：**裸 ZFILE**（跳过 ZRQINIT 直接抛 ZFILE 的发送端）不被当成会话开始 | ⚠️ |
+| **SFTP 面板**（侧栏 *Files* 区 + 标签右键菜单）：服务器既无 `lrzsz` 也无 `trz`/`tsz` 时仍能传文件；复用已认证的连接，不二次登录 | ✅ |
+| SFTP 的 Windows 路径：线格式必须是 `/C:/…`（`filepath.ToSlash` 不够），否则 `SSH_FX_FAILURE` | ✅ |
+| SFTP 本地侧全在 Go（原生对话框），本地路径不进 webview；取消不刷新、不报错 | ✅ |
+| SFTP 限制（有意）：一次一个文件、不递归目录；只删空目录 | ✅ |
 
 `sz`（下载）是好的：lrzsz 的 `sz` 先发 ZRQINIT，扫描器认这个。为什么进度条要 vendor 而不是 import、
 `onStep(0)`/收尾判定/补换行这三处胶水各自为什么必要：

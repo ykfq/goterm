@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"runtime"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ import (
 	"github.com/ykfq/goterm/internal/hostport"
 	"github.com/ykfq/goterm/internal/hoststore"
 	"github.com/ykfq/goterm/internal/secrets"
+	"github.com/ykfq/goterm/internal/sftpx"
 	"github.com/ykfq/goterm/internal/sshx"
 	"github.com/ykfq/goterm/internal/wintheme"
 )
@@ -252,6 +254,80 @@ func (a *App) DuplicateSession(sessionID string) (string, error) {
 // ListSessions reports live sessions for the status bar and tab restore.
 func (a *App) ListSessions() []sshx.SessionInfo {
 	return a.mgr.Sessions()
+}
+
+// --- sftp ------------------------------------------------------------------
+
+// SFTPList lists a remote directory for the file panel. An empty dir means the
+// login directory.
+func (a *App) SFTPList(sessionID, dir string) (sftpx.Listing, error) {
+	return a.mgr.SFTPList(sessionID, dir)
+}
+
+// SFTPMkdir creates a remote directory.
+func (a *App) SFTPMkdir(sessionID, dir string) error {
+	return a.mgr.SFTPMkdir(sessionID, dir)
+}
+
+// SFTPRemove deletes a remote file, or an empty directory when isDir is true.
+func (a *App) SFTPRemove(sessionID, target string, isDir bool) error {
+	return a.mgr.SFTPRemove(sessionID, target, isDir)
+}
+
+// SFTPRename moves or renames one remote entry.
+func (a *App) SFTPRename(sessionID, oldPath, newPath string) error {
+	return a.mgr.SFTPRename(sessionID, oldPath, newPath)
+}
+
+// SFTPUpload asks for files with the native picker and uploads them into
+// remoteDir. An empty result means the user cancelled.
+//
+// The picker and the upload happen in one call on purpose: the local paths
+// never have to travel through the webview, and there is no window in which a
+// half-chosen file list could be replayed.
+func (a *App) SFTPUpload(sessionID, remoteDir string) ([]string, error) {
+	dialogs, err := a.dialogs()
+	if err != nil {
+		return nil, err
+	}
+	paths, err := dialogs.OpenFile().
+		SetTitle("Upload to " + remoteDir).
+		CanChooseFiles(true).
+		CanChooseDirectories(false).
+		CanCreateDirectories(true).
+		PromptForMultipleSelection()
+	if err != nil {
+		return nil, err
+	}
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	return a.mgr.SFTPUpload(sessionID, paths, remoteDir)
+}
+
+// SFTPDownload asks where to save a remote file and fetches it. An empty
+// result means the user cancelled.
+func (a *App) SFTPDownload(sessionID, remotePath string) (string, error) {
+	dialogs, err := a.dialogs()
+	if err != nil {
+		return "", err
+	}
+	name := path.Base(remotePath)
+	target, err := dialogs.SaveFile().
+		SetFilename(name).
+		SetMessage("Save " + name + " from the remote server").
+		CanCreateDirectories(true).
+		PromptForSingleSelection()
+	if err != nil {
+		return "", err
+	}
+	if target == "" {
+		return "", nil
+	}
+	if err := a.mgr.SFTPDownload(sessionID, remotePath, target); err != nil {
+		return "", err
+	}
+	return target, nil
 }
 
 // --- hosts ----------------------------------------------------------------

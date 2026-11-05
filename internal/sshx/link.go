@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/ykfq/goterm/internal/sftpx"
 )
 
 // connRef is one SSH connection and the sessions opened on it.
@@ -43,6 +45,11 @@ type connRef struct {
 	kaStop    chan struct{}
 	kaOnce    sync.Once
 	closeOnce sync.Once
+
+	// sftp is the file-transfer subsystem channel, opened on first use and
+	// shared by every tab on this connection. sftpMu guards it.
+	sftpMu sync.Mutex
+	sftp   *sftpx.Client
 
 	mu       sync.Mutex
 	refs     int
@@ -100,6 +107,12 @@ func (l *connRef) release() {
 func (l *connRef) close() {
 	l.closeOnce.Do(func() {
 		close(l.kaStop)
+		l.sftpMu.Lock()
+		if l.sftp != nil {
+			_ = l.sftp.Close()
+			l.sftp = nil
+		}
+		l.sftpMu.Unlock()
 		if l.client != nil {
 			_ = l.client.Close()
 		}
@@ -109,6 +122,23 @@ func (l *connRef) close() {
 			}
 		}
 	})
+}
+
+// sftpClient opens the file-transfer subsystem on first use and caches it.
+// Tabs duplicated from this connection share the channel, so browsing in one
+// tab and downloading in another never opens a second subsystem.
+func (l *connRef) sftpClient() (*sftpx.Client, error) {
+	l.sftpMu.Lock()
+	defer l.sftpMu.Unlock()
+	if l.sftp != nil {
+		return l.sftp, nil
+	}
+	c, err := sftpx.Open(l.client)
+	if err != nil {
+		return nil, err
+	}
+	l.sftp = c
+	return c, nil
 }
 
 // touch records typed input on any tab of this connection. Session.Write is the

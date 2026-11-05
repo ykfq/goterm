@@ -255,6 +255,4 @@ describe('idle keepalive window', () => {
     store.resetSettings();
     expect(store.state.settings.idleTimeoutHours).toBe(24);
   });
-
-  });
 });

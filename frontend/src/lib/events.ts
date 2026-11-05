@@ -10,8 +10,8 @@
  */
 import { Events } from '@wailsio/runtime';
 
-import type { ClosedEvent, DataEvent, NoticeEvent } from './protocol';
-import { EVENT_CLOSED, EVENT_DATA, EVENT_NOTICE } from './protocol';
+import type { ClosedEvent, DataEvent, NoticeEvent, SFTPProgressEvent } from './protocol';
+import { EVENT_CLOSED, EVENT_DATA, EVENT_NOTICE, EVENT_SFTP_PROGRESS } from './protocol';
 import { base64ToBytes } from './bytes';
 import { backend } from './backend';
 
@@ -20,6 +20,7 @@ type Handler<T> = (payload: T) => void;
 const dataHandlers = new Set<Handler<DataEvent>>();
 const closedHandlers = new Set<Handler<ClosedEvent>>();
 const noticeHandlers = new Set<Handler<NoticeEvent>>();
+const sftpHandlers = new Set<Handler<SFTPProgressEvent>>();
 
 let started = false;
 let bridgeMissing = false;
@@ -118,6 +119,11 @@ export async function initBridge(): Promise<boolean> {
     if (!payload || typeof payload.message !== 'string') return;
     for (const handler of [...noticeHandlers]) handler(payload);
   });
+  Events.On(EVENT_SFTP_PROGRESS, (event) => {
+    const payload = event.data as SFTPProgressEvent;
+    if (!payload || typeof payload.sessionId !== 'string') return;
+    for (const handler of [...sftpHandlers]) handler(payload);
+  });
   return true;
 }
 
@@ -146,9 +152,16 @@ export function onNoticeEvent(handler: Handler<NoticeEvent>): () => void {
   return () => noticeHandlers.delete(handler);
 }
 
+/** Subscribes to file-transfer progress; returns the unsubscribe function. */
+export function onSftpProgress(handler: Handler<SFTPProgressEvent>): () => void {
+  sftpHandlers.add(handler);
+  return () => sftpHandlers.delete(handler);
+}
+
 /** Test seam: lets a test replay events without a backend. */
-export function emitForTest(topic: 'data' | 'closed' | 'notice', payload: unknown): void {
+export function emitForTest(topic: 'data' | 'closed' | 'notice' | 'sftp', payload: unknown): void {
   if (topic === 'data') for (const handler of [...dataHandlers]) handler(payload as DataEvent);
   if (topic === 'closed') for (const handler of [...closedHandlers]) handler(payload as ClosedEvent);
   if (topic === 'notice') for (const handler of [...noticeHandlers]) handler(payload as NoticeEvent);
+  if (topic === 'sftp') for (const handler of [...sftpHandlers]) handler(payload as SFTPProgressEvent);
 }

@@ -9,7 +9,7 @@
 import * as App from '../../bindings/github.com/ykfq/goterm/app';
 import * as Files from '../../bindings/github.com/ykfq/goterm/filebridge';
 import type { FileBridgeApi, FileEntry } from './fsaccess';
-import type { AppInfo, Host, HostExport, HostImport, HostKeyRecord, SessionInfo, SSHConfig, StorageInfo } from './protocol';
+import type { AppInfo, Host, HostExport, HostImport, HostKeyRecord, SessionInfo, SFTPListing, SSHConfig, StorageInfo } from './protocol';
 
 export function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -75,6 +75,23 @@ export const backend = {
    */
   duplicateSession: (sessionId: string) => call('duplicateSession', () => App.DuplicateSession(sessionId)),
   listSessions: () => call('listSessions', () => App.ListSessions() as Promise<SessionInfo[]>),
+
+  /* --- sftp ------------------------------------------------------------- */
+  /** Lists a remote directory; "" starts at the login directory. */
+  sftpList: (sessionId: string, dir: string) =>
+    call('sftpList', () => App.SFTPList(sessionId, dir) as Promise<SFTPListing>),
+  sftpMkdir: (sessionId: string, dir: string) => call('sftpMkdir', () => App.SFTPMkdir(sessionId, dir)),
+  /** Deletes a file, or an empty directory when isDir is true. */
+  sftpRemove: (sessionId: string, target: string, isDir: boolean) =>
+    call('sftpRemove', () => App.SFTPRemove(sessionId, target, isDir)),
+  sftpRename: (sessionId: string, oldPath: string, newPath: string) =>
+    call('sftpRename', () => App.SFTPRename(sessionId, oldPath, newPath)),
+  /** Native picker plus upload; an empty result means the user cancelled. */
+  sftpUpload: (sessionId: string, remoteDir: string) =>
+    call('sftpUpload', () => App.SFTPUpload(sessionId, remoteDir)).then((paths) => paths ?? []),
+  /** Native save dialog plus download; "" means the user cancelled. */
+  sftpDownload: (sessionId: string, remotePath: string) =>
+    call('sftpDownload', () => App.SFTPDownload(sessionId, remotePath)),
 
   listHosts: () => call('listHosts', () => App.ListHosts() as Promise<Host[]>),
   saveHost: (host: Host) => call('saveHost', () => App.SaveHost(host as unknown as GoHost) as Promise<Host>),

@@ -22,11 +22,13 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -134,6 +136,11 @@ type Options struct {
 	// default — a test server should not forward anywhere unless asked.
 	AllowForwarding bool
 
+	// SFTPRoot is the working directory the sftp subsystem starts in. When
+	// empty the server creates a scratch directory; either way the client can
+	// still name absolute paths, exactly like a real sshd.
+	SFTPRoot string
+
 	// TwoFactor makes password auth demand "<Password><digits>", the shape a
 	// TOTP bastion wants: the saved password with a one-time code appended. A
 	// bare password is then refused, exactly like the real thing, which is what
@@ -160,6 +167,11 @@ type Server struct {
 	// allowForwarding enables "direct-tcpip" channels, which is what makes
 	// this server usable as a jump host.
 	allowForwarding bool
+
+	// sftpRoot is where the sftp subsystem starts (WithServerWorkingDirectory).
+	// It is a scratch directory unless Options.SFTPRoot named one.
+	sftpRoot    string
+	sftpTempDir bool
 
 	closeOnce sync.Once
 	wg        sync.WaitGroup
@@ -235,6 +247,16 @@ func NewOn(addr string, opts Options) (*Server, error) {
 
 	s := &Server{listener: ln, cfg: cfg, hostKey: hostKey, shell: opts.Shell, logger: logger,
 		allowForwarding: opts.AllowForwarding}
+	s.sftpRoot = opts.SFTPRoot
+	if s.sftpRoot == "" {
+		dir, err := os.MkdirTemp("", "sshtest-sftp-*")
+		if err != nil {
+			_ = ln.Close()
+			return nil, fmt.Errorf("create sftp root: %w", err)
+		}
+		s.sftpRoot = dir
+		s.sftpTempDir = true
+	}
 	s.wg.Add(1)
 	go s.acceptLoop()
 	return s, nil
@@ -275,10 +297,17 @@ func (s *Server) Close() error {
 		}
 		s.conns = nil
 		s.mu.Unlock()
+		if s.sftpTempDir {
+			_ = os.RemoveAll(s.sftpRoot)
+		}
 	})
 	s.wg.Wait()
 	return nil
 }
+
+// SFTPRoot is the directory the sftp subsystem starts in. Tests use it to lay
+// out remote files and to build remote paths without guessing where they landed.
+func (s *Server) SFTPRoot() string { return s.sftpRoot }
 
 // CloseAllConns hangs up on clients but keeps listening — used to drive the
 // client's "connection lost" path while the port is still live.
@@ -433,6 +462,24 @@ type exitStatusRequest struct{ Status uint32 }
 // handleSession answers the session-channel protocol. The shell runs on its
 // own goroutine so window-change requests keep being served while the shell is
 // busy — a real sshd does the same, and GoTerm's resize path depends on it.
+// serveSFTP runs a real sftp server on the session channel, rooted at root.
+// It is the same protocol real sshd speaks, so a client test exercises the
+// actual wire format rather than a stub.
+func (s *Server) serveSFTP(ch ssh.Channel, root string) {
+	options := []sftp.ServerOption{}
+	if root != "" {
+		options = append(options, sftp.WithServerWorkingDirectory(root))
+	}
+	srv, err := sftp.NewServer(ch, options...)
+	if err != nil {
+		s.logger.Printf("sftp subsystem: %v", err)
+		_ = ch.Close()
+		return
+	}
+	defer ch.Close()
+	_ = srv.Serve()
+}
+
 func (s *Server) handleSession(conn *ssh.ServerConn, ch ssh.Channel, requests <-chan *ssh.Request) {
 	sh := &Shell{
 		User:    conn.User(),
@@ -465,8 +512,23 @@ func (s *Server) handleSession(conn *ssh.ServerConn, ch ssh.Channel, requests <-
 			sh.term = p.Term
 			sh.mu.Unlock()
 			_ = req.Reply(true, nil)
-		case "env", "subsystem":
+		case "env":
 			_ = req.Reply(true, nil)
+		case "subsystem":
+			var payload struct{ Name string }
+			if err := ssh.Unmarshal(req.Payload, &payload); err != nil {
+				_ = req.Reply(false, nil)
+				continue
+			}
+			if payload.Name != "sftp" {
+				// Nothing in the app asks for another subsystem; refusing here
+				// keeps a broken test setup loud instead of hanging it.
+				_ = req.Reply(false, nil)
+				continue
+			}
+			_ = req.Reply(true, nil)
+			root := s.sftpRoot
+			start(func() { s.serveSFTP(ch, root) })
 		case "shell":
 			_ = req.Reply(true, nil)
 			start(func() { s.runShell(sh, ch) })

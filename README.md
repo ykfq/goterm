@@ -46,6 +46,11 @@ Hand the repository to any AI coding assistant with one line:
   vendored verbatim) drawn in the terminal.
 - Write paths are confined to the folder you actually picked in the native file dialog.
 - Cancel is silent — no thrown protocol exception, no half-written file claimed as complete.
+- **SFTP browser** (sidebar *Files* section, or right-click a tab → *Browse files…*): list, navigate,
+  upload, download, rename, make folders and delete on the server — the way to move files where neither
+  `lrzsz` nor `trz`/`tsz` is installed. It rides the connection the tab already has: no second login, no new
+  credential, and the local side of every transfer is a native dialog handled in Go, so no local path enters
+  the webview.
 
 **Hosts and secrets**
 - Saved hosts, groups, search, jump host (`ssh -J`, single hop), two-factor as "code appended to the
@@ -223,6 +228,7 @@ files.go             native file pickers and the scoped file bridge
 selftest.go          in-app self-test against internal/sshtest
 cmd/sshtest          a real SSH server for development and tests
 internal/sshx        SSH: connect, auth, host keys, keepalive, jump host, sessions, lifetime
+internal/sftpx       SFTP over the live SSH connection: list, upload, download, mkdir, rename, remove
 internal/hoststore   hosts.json, export/import, error markers the UI reacts to
 internal/secrets     Windows Credential Manager, sealed-file fallback
 internal/appdir      where state lives: GOTERM_DIR > the Settings pointer > the default
@@ -244,7 +250,10 @@ attempts, are in [`docs/DECISIONS.md`](docs/DECISIONS.md).
 ## Limits
 
 - The **remote** still needs `trz`/`tsz` (`pip install trzsz`, or drop the single binary in
-  `/usr/local/bin`) or `lrzsz`. GoTerm speaks the protocols; it cannot install them.
+  `/usr/local/bin`) or `lrzsz`. GoTerm speaks the protocols; it cannot install them. The SFTP browser
+  needs none of that — only the server's `sftp-server` subsystem (OpenSSH enables it by default).
+- SFTP moves one file at a time and does not copy folders recursively; uploads and downloads always go
+  through a native picker, so a transfer is never started against a path you did not choose.
 - Jump hosts are a single hop (`ssh -J` style, no `-J a,b`), and the bastion must allow TCP forwarding.
 - Two-factor is the "code appended to the password" kind. There is no separate
   keyboard-interactive challenge and no TOTP generation inside GoTerm.

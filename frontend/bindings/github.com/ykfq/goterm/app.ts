@@ -19,6 +19,9 @@ import * as fonts$0 from "./internal/fonts/models.js";
 import * as hoststore$0 from "./internal/hoststore/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import * as sftpx$0 from "./internal/sftpx/models.js";
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as sshx$0 from "./internal/sshx/models.js";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -186,6 +189,55 @@ export function Ping(): $CancellablePromise<string> {
  */
 export function ResizePTY(sessionID: string, cols: number, rows: number): $CancellablePromise<void> {
     return $Call.ByID(4123879244, sessionID, cols, rows);
+}
+
+/**
+ * SFTPDownload asks where to save a remote file and fetches it. An empty
+ * result means the user cancelled.
+ */
+export function SFTPDownload(sessionID: string, remotePath: string): $CancellablePromise<string> {
+    return $Call.ByID(4092991200, sessionID, remotePath);
+}
+
+/**
+ * SFTPList lists a remote directory for the file panel. An empty dir means the
+ * login directory.
+ */
+export function SFTPList(sessionID: string, dir: string): $CancellablePromise<sftpx$0.Listing> {
+    return $Call.ByID(4088245496, sessionID, dir);
+}
+
+/**
+ * SFTPMkdir creates a remote directory.
+ */
+export function SFTPMkdir(sessionID: string, dir: string): $CancellablePromise<void> {
+    return $Call.ByID(3589359483, sessionID, dir);
+}
+
+/**
+ * SFTPRemove deletes a remote file, or an empty directory when isDir is true.
+ */
+export function SFTPRemove(sessionID: string, target: string, isDir: boolean): $CancellablePromise<void> {
+    return $Call.ByID(1888400888, sessionID, target, isDir);
+}
+
+/**
+ * SFTPRename moves or renames one remote entry.
+ */
+export function SFTPRename(sessionID: string, oldPath: string, newPath: string): $CancellablePromise<void> {
+    return $Call.ByID(1854862866, sessionID, oldPath, newPath);
+}
+
+/**
+ * SFTPUpload asks for files with the native picker and uploads them into
+ * remoteDir. An empty result means the user cancelled.
+ * 
+ * The picker and the upload happen in one call on purpose: the local paths
+ * never have to travel through the webview, and there is no window in which a
+ * half-chosen file list could be replayed.
+ */
+export function SFTPUpload(sessionID: string, remoteDir: string): $CancellablePromise<string[] | null> {
+    return $Call.ByID(3176837825, sessionID, remoteDir);
 }
 
 /**

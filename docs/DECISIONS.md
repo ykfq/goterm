@@ -910,6 +910,36 @@ shell 提示符，不补换行会落在条子中间。
 三条（下载画出条子并以换行+光标结束、多文件 `(1/2)`→`(2/2)`、取消弹窗一条都不画）；
 `zmodem-terminal.test.ts` 一条走**真实终端管道**、断言这些字节真的进了 `term.write`。
 
+**SFTP：挂在已有连接上，而不是第二条 SSH**。真正的动机是那类“能直连、但既没 `lrzsz` 也没 `trz`/`tsz`”
+的机器：`rz`/`sz` 和 `trz`/`tsz` 都需要远端有程序，SFTP 不需要，只要服务器开着 `sftp-server` 子系统
+（OpenSSH 默认开）。实现放在 `internal/sftpx`，拿的是 `sshx` 里那条**已经认证过**的 `*ssh.Client`
+（`link.sftpClient()` 懒建并在连接关闭时一并关掉），所以开面板不重连、不要凭据、也不占第二个登录会话；
+`Duplicate` 出来的标签共享同一条连接，也就共享同一个 SFTP 客户端。
+
+**Windows 客户端的路径要写成 POSIX 形态**。`filepath.Join` 在 Windows 上产出 `C:\Users\…`，直接发给
+`sftp-server` 会被拒：`sftp: "open C:\\…\\payload.bin: The filename, directory name, or volume label
+syntax is incorrect." (SSH_FX_FAILURE)`。SFTP 协议里的路径永远用 `/`，Win32 OpenSSH 的约定是盘符带前导
+斜杠（`/C:/Users/…`，`filepath.ToSlash` 不会加那个斜杠）。`sftpx.wirePath()` 是唯一做这个转换的地方，
+列表回来的路径也按同一形态显示，所以面板里看到的路径可以直接粘回远端 shell。
+
+**本地这一端不出 Go**。上传是 `OpenFileDialog`（多选）→ `os.Open` → `sftp.Create`；下载是
+`sftp.Open` → `SaveFileDialog` → `io.Copy`。本地路径从头到尾没进过 webview，和 trzsz 那条“写盘只限
+你选中的目录”是同一条原则，但更简单：SFTP 的本地侧全在 Go 里，前端只收到
+`sftp:progress`（`direction/name/done/total`）拿去画条子。取消对话框返回空切片/空串，前端据此**不刷新
+列表**，所以“我按了取消”不会变成一次看起来失败的空操作。
+
+**面板是停靠式的，不是弹窗**，入口在**左侧栏的 *Files* 区**（只列活着的会话，空着就写“先连一台主机”）以及标签
+右键菜单里：开它的典型理由是“把文件放到我正在操作的东西旁边”，所以终端和文件列表并排；而入口放在侧栏而不是
+只藏在右键菜单，是因为“右键标签”属于知道有这个功能的人才会去找的地方。状态放在 store（`state.sftp`）而不是组件里，因为面板要跨标签切换存活；但**归属**仍是一个标签，
+`closeTab` / `markSessionGone` 都会把它关掉，不会留一个指向死会话的浏览器。导航带序号
+（`sftpSeq`）：慢的旧列表回来时若已有更新的导航，直接丢弃，否则用户点得快一点就会被拽回上一个目录。
+
+**限制（有意为之）**：一次一个文件，不做目录递归（用户要的是“传文件”，递归会带出一整棵树的进度、
+冲突和权限问题）；删除只删空目录，非空目录要让用户自己看清楚了再删；重命名只改同一目录下的名字。
+测试：`internal/sshx/sftp_test.go` 四条（列登录目录、上传下载往返、mkdir/rename/remove、未知会话拒绝），
+跑的是 `internal/sshtest` 里真的 `sftp-server`（`Options.SFTPRoot`）；前端 `store-sftp.test.ts` 七条
+（含陈旧回复不覆盖新导航、取消上传不刷新）+ `SftpPanel.test.ts` 三条。
+
 ---
 
 ### 7. 界面、主题与设置

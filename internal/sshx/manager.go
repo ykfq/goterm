@@ -14,6 +14,8 @@ import (
 	"io"
 	"net"
 	"os"
+	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -21,6 +23,8 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/ykfq/goterm/internal/sftpx"
 )
 
 // Event topics. The frontend subscribes once at startup and routes by
@@ -30,6 +34,10 @@ const (
 	EventData   = "ssh:data"
 	EventClosed = "ssh:closed"
 	EventNotice = "ssh:notice"
+
+	// EventSFTPProgress reports one file moving over the file-transfer
+	// subsystem: while it runs, and once more when Done reaches Total.
+	EventSFTPProgress = "sftp:progress"
 )
 
 // DataEvent carries PTY output. Data is base64 of the raw bytes: the transport
@@ -55,6 +63,16 @@ type NoticeEvent struct {
 	// something. The frontend decides how to render it; unknown actions are
 	// ignored, so adding one never breaks an older UI.
 	Action string `json:"action,omitempty"`
+}
+
+// SFTPProgressEvent is one progress tick for one file. Direction is "upload"
+// or "download"; Name is the file's base name.
+type SFTPProgressEvent struct {
+	SessionID string `json:"sessionId"`
+	Direction string `json:"direction"`
+	Name      string `json:"name"`
+	Done      int64  `json:"done"`
+	Total     int64  `json:"total"`
 }
 
 // EmitFunc publishes an event to the frontend.
@@ -576,6 +594,115 @@ func (m *Manager) Count() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.sessions)
+}
+
+// --- sftp ------------------------------------------------------------------
+//
+// The file panel talks to these; the protocol itself lives in internal/sftpx.
+// The subsystem is opened on the session's existing SSH connection, so a
+// jump-host session transfers over the tunnel it already has and nothing is
+// authenticated twice.
+
+// SFTP returns the file-transfer client for a session's connection, starting
+// the sftp subsystem on first use. Tabs duplicated from the connection share
+// one client.
+func (m *Manager) SFTP(sessionID string) (*sftpx.Client, error) {
+	s, ok := m.Get(sessionID)
+	if !ok {
+		return nil, fmt.Errorf("no session %s — it is not connected", sessionID)
+	}
+	if s.closed() {
+		return nil, fmt.Errorf("session %s is closed: %w", sessionID, ErrClosed)
+	}
+	link := s.link
+	if link == nil || link.client == nil {
+		return nil, fmt.Errorf("session %s has no connection to transfer over", sessionID)
+	}
+	return link.sftpClient()
+}
+
+// SFTPList lists one remote directory; "" means the login directory.
+func (m *Manager) SFTPList(sessionID, dir string) (sftpx.Listing, error) {
+	c, err := m.SFTP(sessionID)
+	if err != nil {
+		return sftpx.Listing{}, err
+	}
+	return c.List(dir)
+}
+
+// SFTPMkdir creates a remote directory.
+func (m *Manager) SFTPMkdir(sessionID, dir string) error {
+	c, err := m.SFTP(sessionID)
+	if err != nil {
+		return err
+	}
+	return c.Mkdir(dir)
+}
+
+// SFTPRemove deletes a remote file, or an empty directory when isDir is true.
+func (m *Manager) SFTPRemove(sessionID, target string, isDir bool) error {
+	c, err := m.SFTP(sessionID)
+	if err != nil {
+		return err
+	}
+	return c.Remove(target, isDir)
+}
+
+// SFTPRename moves or renames one remote entry.
+func (m *Manager) SFTPRename(sessionID, oldPath, newPath string) error {
+	c, err := m.SFTP(sessionID)
+	if err != nil {
+		return err
+	}
+	return c.Rename(oldPath, newPath)
+}
+
+// SFTPUpload copies local files into remoteDir, one at a time, reporting
+// progress as they go. It returns the remote paths written before a failure (if
+// any), so the panel can name what did land.
+func (m *Manager) SFTPUpload(sessionID string, localPaths []string, remoteDir string) ([]string, error) {
+	c, err := m.SFTP(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	written := make([]string, 0, len(localPaths))
+	for _, local := range localPaths {
+		name := filepath.Base(local)
+		remote := path.Join(remoteDir, name)
+		if err := c.Upload(local, remote, m.sftpProgress(sessionID, "upload", name)); err != nil {
+			return written, err
+		}
+		written = append(written, remote)
+	}
+	return written, nil
+}
+
+// SFTPDownload writes one remote file to localPath, reporting progress.
+func (m *Manager) SFTPDownload(sessionID, remotePath, localPath string) error {
+	c, err := m.SFTP(sessionID)
+	if err != nil {
+		return err
+	}
+	return c.Download(remotePath, localPath, m.sftpProgress(sessionID, "download", path.Base(remotePath)))
+}
+
+// sftpProgress throttles progress to roughly ten ticks per second per file,
+// plus the final tick, which the panel uses to settle a row at 100%.
+func (m *Manager) sftpProgress(sessionID, direction, name string) func(done, total int64) {
+	last := time.Time{}
+	return func(done, total int64) {
+		if done < total && time.Since(last) < 100*time.Millisecond {
+			return
+		}
+		last = time.Now()
+		m.emit(EventSFTPProgress, SFTPProgressEvent{
+			SessionID: sessionID,
+			Direction: direction,
+			Name:      name,
+			Done:      done,
+			Total:     total,
+		})
+	}
 }
 
 // CloseAll ends every session; called on app shutdown so no remote shell is

@@ -9,6 +9,7 @@ import PassphraseDialog from './components/PassphraseDialog.vue';
 import PromptDialog from './components/PromptDialog.vue';
 import SidePanel from './components/SidePanel.vue';
 import SettingsDialog from './components/SettingsDialog.vue';
+import SftpPanel from './components/SftpPanel.vue';
 import StatusBar from './components/StatusBar.vue';
 import TabBar from './components/TabBar.vue';
 import TerminalPane from './components/TerminalPane.vue';
@@ -176,7 +177,8 @@ onBeforeUnmount(() => {
         </template>
       </TabBar>
 
-      <section class="relative min-h-0 flex-1 bg-[var(--term-bg)]">
+      <div class="flex min-h-0 flex-1">
+        <section class="relative min-h-0 min-w-0 flex-1 bg-[var(--term-bg)]">
         <div v-for="tab in state.tabs" :key="tab.id" v-show="tab.id === state.activeTabId" class="absolute inset-0">
           <TerminalPane :tab="tab" :active="tab.id === state.activeTabId" />
         </div>
@@ -229,6 +231,9 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </section>
+
+        <SftpPanel v-if="state.sftp.open" />
+      </div>
 
       <StatusBar @show-settings="showSettings = true" />
     </main>

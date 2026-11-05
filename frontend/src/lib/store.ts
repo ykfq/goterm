@@ -11,8 +11,8 @@ import { computed, reactive, watch } from 'vue';
 import { backend, errorMessage, fileBridgeApi } from './backend';
 import { bytesToBase64, formatBytes } from './bytes';
 import { readClipboard, writeClipboard } from './clipboard';
-import { bridgeAvailable, bridgeError, decodeData, initBridge, onClosedEvent, onDataEvent, onNoticeEvent } from './events';
-import type { AppInfo, Host, HostExport, HostImport, HostKeyRecord, NoticeAction, NoticeEvent, NoticeLevel, ProxyConfig } from './protocol';
+import { bridgeAvailable, bridgeError, decodeData, initBridge, onClosedEvent, onDataEvent, onNoticeEvent, onSftpProgress } from './events';
+import type { AppInfo, Host, HostExport, HostImport, HostKeyRecord, NoticeAction, NoticeEvent, NoticeLevel, ProxyConfig, SFTPEntry, SFTPProgressEvent } from './protocol';
 import { COLOUR_SGR, DEFAULT_HIGHLIGHT_SETS } from './highlight';
 import type { CustomRule } from './highlight';
 import type { IdleNudge, TerminalBridge, ThemeName } from './terminal';
@@ -51,6 +51,32 @@ export interface Notice {
   sticky: boolean;
   /** Something the user can do about it, when the backend names one. */
   action?: NoticeAction;
+}
+
+/** One file moving in the SFTP panel. */
+export interface SftpTransfer {
+  key: string;
+  direction: 'upload' | 'download';
+  name: string;
+  done: number;
+  total: number;
+}
+
+/** The file browser's state: which session it belongs to and where it is. */
+export interface SftpState {
+  open: boolean;
+  tabId: string | null;
+  sessionId: string | null;
+  /** Resolved remote directory currently listed. */
+  path: string;
+  entries: SFTPEntry[];
+  loading: boolean;
+  error: string;
+  transfers: SftpTransfer[];
+}
+
+function emptySftp(): SftpState {
+  return { open: false, tabId: null, sessionId: null, path: '', entries: [], loading: false, error: '', transfers: [] };
 }
 
 interface Settings {
@@ -256,6 +282,7 @@ export const state = reactive({
   bridgeReady: false,
   filePickerMode: 'none' as PickerMode,
   settings: saved,
+  sftp: emptySftp(),
 });
 
 let noticeSeq = 0;
@@ -754,6 +781,7 @@ export async function bootstrap(): Promise<boolean> {
   });
 
   onNoticeEvent(applyNoticeEvent);
+  onSftpProgress(applySftpProgress);
 
   if (state.bridgeReady) {
     void loadHosts();
@@ -1146,6 +1174,7 @@ export function acceptsInput(tab: Pick<Tab, 'sessionId' | 'status'>): boolean {
 export function markSessionGone(tab: Tab, message: string): void {
   tab.status = 'closed';
   tab.detail = message;
+  if (state.sftp.open && state.sftp.tabId === tab.id) closeSftp();
   const bridge = bridges.get(tab.id);
   bridge?.setIdleKeepAlive(0);
   bridge?.term.write(`\r\n\x1b[2m[goterm] ${message}\x1b[0m\r\n`);
@@ -1168,6 +1197,7 @@ export function terminalHasFocus(tabId: string | null | undefined = state.active
 export function closeTab(tabId: string): void {
   const index = state.tabs.findIndex((tab) => tab.id === tabId);
   if (index < 0) return;
+  if (state.sftp.open && state.sftp.tabId === tabId) closeSftp();
   const [tab] = state.tabs.splice(index, 1);
   if (tab?.sessionId) {
     backend.closeSession(tab.sessionId).catch(() => undefined);
@@ -1179,6 +1209,174 @@ export function closeTab(tabId: string): void {
     if (next) activateTab(next.id);
     else state.activeTabId = null;
   }
+}
+
+// --- sftp file browser ------------------------------------------------------
+//
+// The panel is per-tab but lives at app level: a session can be browsed while
+// another tab is active, and the panel survives tab switches. Every navigation
+// is one sftpList round trip; uploads and downloads run between native dialogs
+// inside Go, so no local path ever travels through the webview.
+
+let sftpSeq = 0;
+
+function joinRemote(dir: string, name: string): string {
+  return dir.endsWith('/') ? `${dir}${name}` : `${dir}/${name}`;
+}
+
+function remoteParent(dir: string): string {
+  const trimmed = dir.replace(/\/+$/, '');
+  const cut = trimmed.lastIndexOf('/');
+  return cut <= 0 ? '/' : trimmed.slice(0, cut);
+}
+
+/** Opens the file browser on a tab's live session and lists its login directory. */
+export function openSftp(tabId: string): void {
+  const tab = state.tabs.find((candidate) => candidate.id === tabId);
+  if (!tab?.sessionId || tab.status !== 'open') {
+    pushNotice('warn', 'Only a connected session can browse files.');
+    return;
+  }
+  state.sftp.open = true;
+  state.sftp.tabId = tab.id;
+  state.sftp.sessionId = tab.sessionId;
+  state.sftp.path = '';
+  state.sftp.entries = [];
+  state.sftp.transfers = [];
+  state.sftp.error = '';
+  void refreshSftp('');
+}
+
+export function closeSftp(): void {
+  sftpSeq += 1; // a late listing must not reopen a closed panel
+  state.sftp = emptySftp();
+}
+
+/** Lists dir; an empty string means "wherever the login starts". */
+export async function refreshSftp(dir?: string): Promise<void> {
+  const sessionId = state.sftp.sessionId;
+  if (!sessionId) return;
+  const target = dir ?? state.sftp.path;
+  const seq = ++sftpSeq;
+  state.sftp.loading = true;
+  state.sftp.error = '';
+  try {
+    const listing = await backend.sftpList(sessionId, target);
+    if (seq !== sftpSeq || state.sftp.sessionId !== sessionId) return; // a newer navigation won
+    state.sftp.path = listing.path;
+    state.sftp.entries = listing.entries ?? [];
+  } catch (error) {
+    if (seq === sftpSeq) state.sftp.error = errorMessage(error);
+  } finally {
+    if (seq === sftpSeq) state.sftp.loading = false;
+  }
+}
+
+export function sftpGoUp(): void {
+  const parent = remoteParent(state.sftp.path);
+  if (parent !== state.sftp.path) void refreshSftp(parent);
+}
+
+/** Native multi-file picker, then upload into the listed directory. */
+export async function sftpUpload(): Promise<void> {
+  const sessionId = state.sftp.sessionId;
+  if (!sessionId) return;
+  state.sftp.error = '';
+  state.sftp.transfers = [];
+  try {
+    const written = await backend.sftpUpload(sessionId, state.sftp.path);
+    if (written.length) {
+      pushNotice('info', `Uploaded ${written.length} file${written.length === 1 ? '' : 's'} to ${state.sftp.path}`);
+      await refreshSftp(state.sftp.path);
+    }
+  } catch (error) {
+    state.sftp.error = errorMessage(error);
+  }
+}
+
+/** Native save dialog, then fetch one file. */
+export async function sftpDownload(entry: SFTPEntry): Promise<void> {
+  const sessionId = state.sftp.sessionId;
+  if (!sessionId || entry.dir) return;
+  state.sftp.error = '';
+  state.sftp.transfers = [];
+  try {
+    const saved = await backend.sftpDownload(sessionId, entry.path);
+    if (saved) pushNotice('info', `Saved ${entry.name} to ${saved}`);
+  } catch (error) {
+    state.sftp.error = errorMessage(error);
+  }
+}
+
+export async function sftpMkdir(): Promise<void> {
+  const sessionId = state.sftp.sessionId;
+  if (!sessionId) return;
+  const name = await askPrompt({
+    title: 'New folder',
+    hint: `Create it in ${state.sftp.path}`,
+    label: 'Folder name',
+    placeholder: 'folder',
+    confirm: 'Create',
+  });
+  const clean = (name ?? '').trim();
+  if (!clean) return;
+  try {
+    await backend.sftpMkdir(sessionId, joinRemote(state.sftp.path, clean));
+    await refreshSftp(state.sftp.path);
+  } catch (error) {
+    state.sftp.error = errorMessage(error);
+  }
+}
+
+export async function sftpRename(entry: SFTPEntry): Promise<void> {
+  const sessionId = state.sftp.sessionId;
+  if (!sessionId) return;
+  const name = await askPrompt({
+    title: 'Rename',
+    hint: `Rename ${entry.name}`,
+    label: 'New name',
+    initial: entry.name,
+    confirm: 'Rename',
+  });
+  const clean = (name ?? '').trim();
+  if (!clean || clean === entry.name) return;
+  try {
+    await backend.sftpRename(sessionId, entry.path, joinRemote(state.sftp.path, clean));
+    await refreshSftp(state.sftp.path);
+  } catch (error) {
+    state.sftp.error = errorMessage(error);
+  }
+}
+
+export async function sftpRemove(entry: SFTPEntry): Promise<void> {
+  const sessionId = state.sftp.sessionId;
+  if (!sessionId) return;
+  const kind = entry.dir ? 'folder' : 'file';
+  const confirmed =
+    typeof window.confirm === 'function'
+      ? window.confirm(
+          `Delete the ${kind} "${entry.name}"?${entry.dir ? ' Only an empty folder can be deleted.' : ''}`,
+        )
+      : true;
+  if (!confirmed) return;
+  try {
+    await backend.sftpRemove(sessionId, entry.path, entry.dir);
+    await refreshSftp(state.sftp.path);
+  } catch (error) {
+    state.sftp.error = errorMessage(error);
+  }
+}
+
+function applySftpProgress(event: SFTPProgressEvent): void {
+  if (!state.sftp.open || event.sessionId !== state.sftp.sessionId) return;
+  const key = `${event.direction}:${event.name}`;
+  const row = state.sftp.transfers.find((candidate) => candidate.key === key);
+  if (row) {
+    row.done = event.done;
+    row.total = event.total;
+    return;
+  }
+  state.sftp.transfers.push({ key, direction: event.direction, name: event.name, done: event.done, total: event.total });
 }
 
 // --- one-field prompts ----------------------------------------------------

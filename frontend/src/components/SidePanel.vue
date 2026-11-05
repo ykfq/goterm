@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { ChevronRight, Download, KeyRound, Lock, Pencil, Plug, Plus, Search, Terminal, Trash2, Upload } from 'lucide-vue-next';
+import { ChevronRight, Download, Folder, KeyRound, Lock, Pencil, Plug, Plus, Search, Terminal, Trash2, Upload } from 'lucide-vue-next';
 import { computed, ref } from 'vue';
 
 import { backend, errorMessage } from '../lib/backend';
-import { connectHost, exportHosts, importHosts, loadHosts, pushNotice, state } from '../lib/store';
+import { connectHost, exportHosts, importHosts, loadHosts, openSftp, pushNotice, state } from '../lib/store';
 import type { Host } from '../lib/protocol';
+import type { Tab } from '../lib/store';
 
 const emit = defineEmits<{
   (event: 'new-host'): void;
@@ -48,6 +49,17 @@ async function remove(host: Host): Promise<void> {
 }
 
 const accentFor = (host: Host): string => host.colour || 'var(--text-dim)';
+
+// --- files ---------------------------------------------------------------
+//
+// A live session is the only thing SFTP can be opened on, so the entry point
+// lists exactly those. Hiding it behind the tab menu was the wrong place: the
+// sidebar is where you already look to see what is connected.
+const liveSessions = computed(() => state.tabs.filter((tab) => tab.status === 'open' && Boolean(tab.sessionId)));
+
+function isBrowsing(tab: Tab): boolean {
+  return state.sftp.open && state.sftp.tabId === tab.id;
+}
 </script>
 
 <template>
@@ -139,6 +151,32 @@ const accentFor = (host: Host): string => host.colour || 'var(--text-dim)';
       </section>
     </nav>
 
+    <section class="shrink-0 border-t border-[var(--border)] px-2 py-2" data-test="sidebar-files">
+      <h3 class="flex items-center gap-1.5 px-2 pb-1 text-[10px] uppercase tracking-wider text-[var(--text-dim)]">
+        <Folder :size="11" /> Files
+        <span v-if="liveSessions.length" class="ml-auto normal-case tracking-normal">{{ liveSessions.length }}</span>
+      </h3>
+      <p v-if="!liveSessions.length" class="px-2 pb-0.5 text-[11px] leading-snug text-[var(--text-dim)]">
+        Connect a host to browse its files over SFTP.
+      </p>
+      <button
+        v-for="tab in liveSessions"
+        :key="tab.id"
+        class="focus-ring flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-[12px]"
+        :class="
+          isBrowsing(tab)
+            ? 'bg-[var(--panel-2)] text-[var(--text)]'
+            : 'text-[var(--text-dim)] hover:bg-[var(--panel-2)] hover:text-[var(--text)]'
+        "
+        :title="`Browse ${tab.target} over SFTP`"
+        data-test="sidebar-sftp-entry"
+        @click="openSftp(tab.id)"
+      >
+        <Folder :size="13" class="shrink-0" :class="isBrowsing(tab) ? 'text-[var(--accent)]' : ''" />
+        <span class="truncate-1 min-w-0 flex-1">{{ tab.title }}</span>
+      </button>
+    </section>
+
     <footer class="border-t border-[var(--border)] px-3 py-2 text-[11px] text-[var(--text-dim)]">
       <div class="mb-1 flex gap-1">
         <button
@@ -162,8 +200,8 @@ const accentFor = (host: Host): string => host.colour || 'var(--text-dim)';
         <span class="ml-auto">{{ state.knownHosts.length }}</span>
       </button>
       <p class="px-1 pt-1 leading-snug">
-        File transfer needs <code class="text-[var(--text)]">trz</code>/<code class="text-[var(--text)]">tsz</code> on the
-        server; drag a file onto a terminal to upload.
+        Files move over <code class="text-[var(--text)]">SFTP</code> — nothing to install on the server. Drag onto a
+        terminal for <code class="text-[var(--text)]">trz</code>/<code class="text-[var(--text)]">tsz</code>.
       </p>
     </footer>
   </aside>
