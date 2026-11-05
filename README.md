@@ -72,6 +72,9 @@ Hand the repository to any AI coding assistant with one line:
 - Dark and light themes; the window frame follows the theme (DWM). Keyword colouring with per-line
   vocabularies and `.msyn` import, five built-in rule sets.
 - Settings apply to every open tab instantly and persist.
+- The host sidebar is resizable (drag its right edge: any width up to half the window, remembered
+between runs; double-click the edge to go back to the default, drag it to the left edge to collapse the
+sidebar — `Ctrl+Shift+B` brings it back at the width it had).
 - Config folder defaults to `%USERPROFILE%\AppData\Roaming\goterm` and is configurable
   (Settings → Behaviour → Storage).
 
@@ -120,7 +123,7 @@ you the UI alone (it will report "No Go backend" — there is no bridge).
 
 ```powershell
 go test ./...                        # Go: SSH stack, host store, secrets, app bindings
-npm --prefix frontend test           # 373 vitest cases in 38 files
+npm --prefix frontend test           # 421 vitest cases in 43 files
 npm --prefix frontend run typecheck  # vue-tsc, strict
 ```
 

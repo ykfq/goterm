@@ -58,13 +58,15 @@
 - SSH 保活（`keepalive@openssh.com`）——**绝不发回车**，所以不可能让对面提前执行什么。
 - anti-idle 对付 `TMOUT` 和堡垒机活动检测，默认关闭：空格+退格（不可见）、空行，或者给 TUI 用的
   "只发一个空格"。
-- **每条连接都有硬上限**（默认 12 小时，可设 1–24 小时，在 Go 侧执行）。保活是"发现链接已经死了"，
-  不是"让一个登录永不结束"。
+- **闲置超过窗口就停止保活**（默认 24 小时，可设 1–744 小时，在 Go 侧执行）。一直在输入就一直保活；
+  连续闲置到窗口后停发信号，是否断开交给服务器自己的空闲策略。
 
 **其它**
 - 明暗两套主题，窗口标题栏与边框跟着主题走（DWM）。关键字高亮支持"一行一套词汇"和 `.msyn` 导入，
   内置五套规则。
 - 设置改动即时作用于所有已开标签，并持久化。
+- 左侧主机栏宽度可拖（拖右边缘：任意宽度，最多占窗口一半，重启后记得住；双击边缘恢复默认；一直拖到左边缘就
+  折叠起来，`Ctrl+Shift+B` 按原宽度展开）。
 - 配置文件默认路径：%USERPROFILE%\AppData\Roaming\goterm（设置 → Behaviour → Storage 可改）;
 
 ---
@@ -109,7 +111,7 @@ wails3 generate bindings -ts -d frontend/bindings -clean
 
 ```powershell
 go test ./...                        # Go：SSH 栈、主机存储、密钥、应用绑定
-npm --prefix frontend test           # 373 个 vitest 用例 / 38 个文件
+npm --prefix frontend test           # 421 个 vitest 用例 / 43 个文件
 npm --prefix frontend run typecheck  # vue-tsc，严格模式
 ```
 

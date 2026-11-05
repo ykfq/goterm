@@ -373,6 +373,12 @@ actually goes away.
 Three properties make it a window rather than a trap:
 - The clock belongs to the **connection**, not to the tab, and only typed input
   resets it. A duplicate shares the clock — typing in either tab keeps the whole
+  link alive — while remote output, resizes and the probes themselves do not
+  count.
+- The window is measured from the **last keystroke**, so a session that is being
+  used is never cut off by it: there is no cap on how long an active session may
+  live. Lowering the setting reaches connections that are already open, and a
+  connection that has been quiet past the new window stops probing at its next
   keepalive tick.
 - Go clamps whatever it is told to 1–744 and reads 0 or nonsense as the 24-hour
   default, so neither a stale UI nor a hand-edited settings file can ask for

@@ -255,4 +255,38 @@ describe('idle keepalive window', () => {
     store.resetSettings();
     expect(store.state.settings.idleTimeoutHours).toBe(24);
   });
+
+  it('remembers the sidebar width and clamps it to half the window', async () => {
+    const first = await freshStore();
+    expect(first.state.settings.sidebarWidth).toBe(first.SIDEBAR_WIDTH_DEFAULT);
+
+    first.setSidebarWidth(320);
+    expect(JSON.parse(localStorage.getItem(KEY) ?? '{}').sidebarWidth).toBe(320);
+    expect((await freshStore()).state.settings.sidebarWidth).toBe(320);
+
+    // Any width is allowed up to half the window; past that the terminal would
+    // be the smaller half of the app.
+    const cap = first.maxSidebarWidth();
+    expect(cap).toBe(Math.floor(window.innerWidth / 2));
+    localStorage.setItem(KEY, JSON.stringify({ settingsVersion: 3, sidebarWidth: 99999 }));
+    expect((await freshStore()).state.settings.sidebarWidth).toBe(cap);
+
+    // Narrow is the user's business — 0 is a legal (if silly) drag.
+    localStorage.setItem(KEY, JSON.stringify({ settingsVersion: 3, sidebarWidth: -10 }));
+    expect((await freshStore()).state.settings.sidebarWidth).toBe(0);
+
+    localStorage.setItem(KEY, JSON.stringify({ settingsVersion: 3, sidebarWidth: 'wide' }));
+    expect((await freshStore()).state.settings.sidebarWidth).toBe(Math.min(268, cap));
+  });
+
+  it('does not write a width on every pointer move', async () => {
+    const store = await freshStore();
+
+    store.previewSidebarWidth(400);
+    expect(store.state.settings.sidebarWidth).toBe(400);
+    expect(localStorage.getItem(KEY)).toBeNull();
+
+    store.setSidebarWidth(400);
+    expect(localStorage.getItem(KEY)).toContain('"sidebarWidth":400');
+  });
 });

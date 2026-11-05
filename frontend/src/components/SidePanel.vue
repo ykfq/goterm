@@ -1,9 +1,21 @@
 <script setup lang="ts">
 import { ChevronRight, Download, Folder, KeyRound, Lock, Pencil, Plug, Plus, Search, Terminal, Trash2, Upload } from 'lucide-vue-next';
-import { computed, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 
 import { backend, errorMessage } from '../lib/backend';
-import { connectHost, exportHosts, importHosts, loadHosts, openSftp, pushNotice, state } from '../lib/store';
+import {
+  SIDEBAR_WIDTH_DEFAULT,
+  connectHost,
+  exportHosts,
+  importHosts,
+  loadHosts,
+  maxSidebarWidth,
+  openSftp,
+  previewSidebarWidth,
+  pushNotice,
+  setSidebarWidth,
+  state,
+} from '../lib/store';
 import type { Host } from '../lib/protocol';
 import type { Tab } from '../lib/store';
 
@@ -60,10 +72,93 @@ const liveSessions = computed(() => state.tabs.filter((tab) => tab.status === 'o
 function isBrowsing(tab: Tab): boolean {
   return state.sftp.open && state.sftp.tabId === tab.id;
 }
+
+// --- resizable width -------------------------------------------------------
+//
+// The divider is a thin strip on the right edge. Width follows the pointer
+// while dragging (the terminal's ResizeObserver refits on every frame) but is
+// only written to localStorage on release; double-click restores the default,
+// and dragging it to the left edge folds the sidebar away entirely.
+const resizing = ref(false);
+let dragStartX = 0;
+let dragStartWidth = 0;
+/** The strip being dragged, so a move can end the drag itself. */
+let dragHandle: HTMLElement | null = null;
+let dragPointer = 0;
+
+/**
+ * How close to the left edge a drag has to get before the panel folds away
+ * instead of staying as an unusable sliver. The width the user had is kept, so
+ * reopening (Ctrl+Shift+B, or the sidebar button) comes back the way it was.
+ */
+const COLLAPSE_AT_PX = 40;
+
+function releasePointer(): void {
+  const handle = dragHandle;
+  dragHandle = null;
+  if (!handle) return;
+  if (typeof handle.releasePointerCapture === 'function' && handle.hasPointerCapture(dragPointer)) {
+    handle.releasePointerCapture(dragPointer);
+  }
+}
+
+function onResizeStart(event: PointerEvent): void {
+  if (event.button !== 0) return;
+  resizing.value = true;
+  dragStartX = event.clientX;
+  dragStartWidth = state.settings.sidebarWidth;
+  dragHandle = event.currentTarget as HTMLElement;
+  dragPointer = event.pointerId;
+  // Capture so the drag keeps working when the pointer outruns the strip.
+  if (typeof dragHandle.setPointerCapture === 'function') dragHandle.setPointerCapture(event.pointerId);
+  event.preventDefault();
+}
+
+function onResizeMove(event: PointerEvent): void {
+  if (!resizing.value) return;
+  const next = dragStartWidth + (event.clientX - dragStartX);
+  if (next <= COLLAPSE_AT_PX) {
+    // There is nothing left worth dragging at that width, so fold the panel
+    // away and end the drag here — the divider disappears with it, which is
+    // also the release. The remembered width is put back, not the sliver.
+    releasePointer();
+    resizing.value = false;
+    setSidebarWidth(dragStartWidth);
+    state.sidebarOpen = false;
+    return;
+  }
+  previewSidebarWidth(next);
+}
+
+function onResizeEnd(): void {
+  if (!resizing.value) return;
+  releasePointer();
+  resizing.value = false;
+  setSidebarWidth(state.settings.sidebarWidth);
+}
+
+function resetWidth(): void {
+  setSidebarWidth(SIDEBAR_WIDTH_DEFAULT);
+}
+
+// The ceiling is half the window, so it moves when the window does: a panel
+// dragged wide on a maximized window must not stay that wide after a restore.
+function enforceWidthCap(): void {
+  const cap = maxSidebarWidth();
+  if (state.settings.sidebarWidth > cap) setSidebarWidth(cap);
+}
+
+onMounted(() => window.addEventListener('resize', enforceWidthCap));
+onBeforeUnmount(() => window.removeEventListener('resize', enforceWidthCap));
 </script>
 
 <template>
-  <aside class="flex h-full w-[268px] shrink-0 flex-col border-r border-[var(--border)] bg-[var(--panel)]">
+  <aside
+    class="relative flex h-full shrink-0 flex-col overflow-hidden border-r border-[var(--border)] bg-[var(--panel)]"
+    :class="resizing ? 'select-none' : ''"
+    :style="{ width: `${state.settings.sidebarWidth}px` }"
+    data-test="sidebar"
+  >
     <header class="flex items-center gap-2 px-3 py-2.5">
       <span class="flex h-6 w-6 items-center justify-center rounded bg-[var(--accent)]/18 text-[var(--accent)]">
         <Terminal :size="14" />
@@ -204,5 +299,17 @@ function isBrowsing(tab: Tab): boolean {
         terminal for <code class="text-[var(--text)]">trz</code>/<code class="text-[var(--text)]">tsz</code>.
       </p>
     </footer>
+
+    <div
+      class="absolute inset-y-0 right-0 z-10 w-[4px] cursor-col-resize hover:bg-[var(--accent)]/40"
+      :class="resizing ? 'bg-[var(--accent)]/50' : ''"
+      title="Drag to resize · to the edge to collapse · double-click to reset"
+      data-test="sidebar-resizer"
+      @pointerdown="onResizeStart"
+      @pointermove="onResizeMove"
+      @pointerup="onResizeEnd"
+      @pointercancel="onResizeEnd"
+      @dblclick="resetWidth"
+    ></div>
   </aside>
 </template>

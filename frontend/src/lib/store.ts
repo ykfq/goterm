@@ -124,6 +124,11 @@ interface Settings {
    */
   copyOnSelect: boolean;
   /**
+   * Width of the host sidebar in CSS pixels. Dragging the divider writes this;
+   * it is a layout preference, so it belongs with the other settings rather
+   * than in a second storage key.
+   */
+  sidebarWidth: number;
   /**
    * Fill the whole cell with block and box-drawing characters.
    *
@@ -137,7 +142,28 @@ interface Settings {
 
 const SETTINGS_KEY = 'goterm.settings';
 /** Bumped when the meaning of the stored settings changes. */
-const SETTINGS_VERSION = 2;
+const SETTINGS_VERSION = 3;
+
+/**
+ * Sidebar width bounds: any width the user drags to, up to half the window —
+ * past that the terminal is no longer worth looking at, and the cap has to
+ * follow the window or a resized window ends up with a panel wider than it.
+ * Declared above the defaults because `loadSettings()` runs while this module
+ * is being evaluated.
+ */
+export const SIDEBAR_WIDTH_DEFAULT = 268;
+
+/** Half the window, recomputed whenever it is asked for. */
+export function maxSidebarWidth(): number {
+  const width = typeof window !== 'undefined' && Number.isFinite(window.innerWidth) ? window.innerWidth : 1024;
+  return Math.max(0, Math.floor(width / 2));
+}
+
+function clampSidebarWidth(value: unknown): number {
+  const cap = maxSidebarWidth();
+  if (typeof value !== 'number' || !Number.isFinite(value)) return Math.min(SIDEBAR_WIDTH_DEFAULT, cap);
+  return Math.min(cap, Math.max(0, Math.round(value)));
+}
 
 function defaultSettings(): Settings {
   return {
@@ -155,6 +181,7 @@ function defaultSettings(): Settings {
     idleTimeoutHours: 24,
     copyOnSelect: true,
     continuousGlyphs: false,
+    sidebarWidth: SIDEBAR_WIDTH_DEFAULT,
   };
 }
 
@@ -262,6 +289,7 @@ function loadSettings(): Settings {
       copyOnSelect: typeof parsed.copyOnSelect === 'boolean' ? parsed.copyOnSelect : fallback.copyOnSelect,
     continuousGlyphs:
       typeof parsed.continuousGlyphs === 'boolean' ? parsed.continuousGlyphs : fallback.continuousGlyphs,
+      sidebarWidth: clampSidebarWidth(parsed.sidebarWidth),
     };
   } catch {
     return fallback;
@@ -510,9 +538,21 @@ export function setContinuousGlyphs(on: boolean): void {
   for (const bridge of bridges.values()) bridge.setContinuousGlyphs(on);
 }
 
+/** Sidebar width while the divider is being dragged: layout follows the pointer. */
+export function previewSidebarWidth(width: number): void {
+  // Saving on every pointermove would write localStorage sixty times a second
+  // for a value nobody reads until the drag ends; the landing value does that.
+  state.settings.sidebarWidth = clampSidebarWidth(width);
+}
+
+/** Landing value of a drag (or a double-click reset), clamped and persisted. */
+export function setSidebarWidth(width: number): void {
+  previewSidebarWidth(width);
+  saveSettings();
+}
+
 export function resetSettings(): void {
-  const defaults = defaultSettings();
-  setFontSize(defaults.fontSize);
+  const defaults = defaultSettings();  setFontSize(defaults.fontSize);
   setFontFamily(defaults.fontFamily);
   setTerminalEncoding(defaults.encoding);
   setWordSeparator(defaults.wordSeparator);
@@ -524,6 +564,7 @@ export function resetSettings(): void {
   setIdleNudge(defaults.idleNudge);
   setCopyOnSelect(defaults.copyOnSelect);
   setContinuousGlyphs(defaults.continuousGlyphs);
+  setSidebarWidth(defaults.sidebarWidth);
 }
 
 // --- notices ---------------------------------------------------------------
