@@ -210,6 +210,107 @@ describe('OutputHighlighter: highlight sets', () => {
     expect(run(errorLog)).toMatch(/\x1b\[31mfailed/);
   });
 
+  it('colours an nginx config line: directive, variable, path and terminator', () => {
+    const line = '    fastcgi_param  SCRIPT_FILENAME  $document_root$fastcgi_script_name;';
+    const out = run(line);
+    expect(out).toMatch(/\x1b\[1;36mfastcgi_param/);
+    expect(out).toMatch(/\x1b\[35m\$document_root/);
+    expect(out).toMatch(/\x1b\[35m\$fastcgi_script_name/);
+    expect(out).toMatch(/\x1b\[1;30m;/);
+    expect(visible(out)).toBe(line);
+  });
+
+  it('reads a server block as config, line by line', () => {
+    const block = [
+      'server {',
+      '    listen       443 ssl;',
+      '    server_name  example.com;',
+      '    root         /usr/share/nginx/html;',
+      '    location ~ \\.php$ {',
+      '        fastcgi_pass  127.0.0.1:9000;',
+      '    }',
+      '}',
+    ].join('\n');
+    const out = run(block);
+    expect(out).toMatch(/\x1b\[1;35mserver/);
+    expect(out).toMatch(/\x1b\[1;36mlisten/);
+    expect(out).toMatch(/\x1b\[33m443/);
+    expect(out).toMatch(/\x1b\[1;36mserver_name/);
+    expect(out).toMatch(/\x1b\[1;34m\/usr\/share\/nginx\/html/);
+    expect(out).toMatch(/\x1b\[1;35mlocation/);
+    expect(out).toMatch(/\x1b\[1;30m~/); // the location modifier, not a value
+    expect(out).toMatch(/\x1b\[1;36mfastcgi_pass/);
+    // The address is a data shape, so it keeps the data set's colour.
+    expect(out).toMatch(/\x1b\[1;36m127\.0\.0\.1/);
+    expect(visible(out)).toBe(block);
+  });
+
+  it('colours a config comment, a quoted value and a size', () => {
+    const line = '    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always; # HSTS';
+    const out = run(line);
+    expect(out).toMatch(/\x1b\[1;36madd_header/);
+    // The `;` inside the quotes is content, not the end of the statement.
+    expect(out).toMatch(/\x1b\[32m"max-age=31536000; includeSubDomains"/);
+    expect(out).toMatch(/\x1b\[90m# HSTS/);
+    expect(visible(out)).toBe(line);
+
+    expect(run('    client_max_body_size 64m;')).toMatch(/\x1b\[33m64m/);
+    expect(run('    keepalive_timeout  65s;')).toMatch(/\x1b\[33m65s/);
+    expect(run('    worker_processes auto;')).toMatch(/\x1b\[1;33mauto/);
+  });
+
+  it('reads config that came through grep -n, not just a bare cat', () => {
+    const out = run('24:    listen       80;');
+    expect(out).toMatch(/\x1b\[1;36mlisten/);
+    expect(out).toMatch(/\x1b\[33m80/);
+  });
+
+  it('reads config whose lines end CRLF, as a file edited on Windows will', () => {
+    const out = run('    listen 80;\r\n    server_name example.com;\r\n');
+    expect(out).toMatch(/\x1b\[1;36mlisten/);
+    expect(out).toMatch(/\x1b\[1;36mserver_name/);
+    expect(visible(out)).toBe('    listen 80;\r\n    server_name example.com;\r\n');
+  });
+
+  it('keeps the statement separator out of the URL that precedes it', () => {
+    const line = '    proxy_pass http://10.0.0.9:8080;';
+    const out = run(line);
+    expect(out).toMatch(/\x1b\[4;36mhttp:\/\/10\.0\.0\.9:8080/);
+    // The `;` is the end of the directive — the one character that says where it
+    // stops — so it must not be dressed as part of the address. Two assertions:
+    // the URL colour ends at the port, and the semicolon carries its own colour.
+    expect(out).toMatch(/:8080\x1b\[0m/);
+    expect(out).toMatch(/\x1b\[1;30m;/);
+    expect(out).not.toMatch(/8080;/);
+    expect(visible(out)).toBe(line);
+  });
+
+  it('reads a bare `return N;` as config, which is a coin toss it admits to', () => {
+    // `set -e;` is disqualified by the flag after it, but a bare `return N;` is
+    // legal in nginx and in a shell script, and the shape cannot tell them
+    // apart. What is pinned here is the outcome a reader cares about: the word is
+    // still shown as a keyword, and no byte of the line moves.
+    const out = run('    return 404;');
+    expect(out).toMatch(/\x1b\[1;36mreturn/);
+    expect(out).toMatch(/\x1b\[33m404/);
+    expect(visible(out)).toBe('    return 404;');
+  });
+
+  it('does not mistake a shell line for nginx config', () => {
+    // `set` is an nginx directive too; the flag after it is what says otherwise.
+    const shellLine = run('set -e; echo "$HOME"');
+    expect(shellLine).toMatch(/\x1b\[33m-e/); // a shell flag, so the shell vocabulary answered
+    expect(shellLine).not.toMatch(/\x1b\[1;36mset/);
+
+    // A command line has no statement terminator, so config never claims it.
+    const cmd = run('sudo nginx -t && systemctl reload nginx');
+    expect(cmd).toMatch(/\x1b\[33m-t/);
+
+    // Words a script shares with nginx stay script words, not paths.
+    expect(visible(run('    root         /usr/share/nginx/html;'))).toBe('    root         /usr/share/nginx/html;');
+    expect(run('ls /etc/nginx/nginx.conf')).toMatch(/\x1b\[1;36mls/);
+  });
+
   it('colours a syslog line: time, service tag and severity', () => {
     const line = 'Oct 23 04:11:02 web-01 sshd[4012]: Failed password for root from 10.0.0.8 port 51234 ssh2';
     const out = run(line);

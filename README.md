@@ -70,7 +70,9 @@ Hand the repository to any AI coding assistant with one line:
 
 **The rest**
 - Dark and light themes; the window frame follows the theme (DWM). Keyword colouring with per-line
-  vocabularies and `.msyn` import, five built-in rule sets.
+  vocabularies and `.msyn` import, six built-in rule sets: shell commands, bash scripts, nginx
+  access/error logs, nginx **config** (`nginx -T`, `cat nginx.conf`, and `grep -n` / `cat -n` output of
+  those files), Linux messages, and data shapes on any line.
 - Settings apply to every open tab instantly and persist.
 - The host sidebar is resizable (drag its right edge: any width up to half the window, remembered
 between runs; double-click the edge to go back to the default, drag it to the left edge to collapse the
@@ -189,7 +191,7 @@ has read. One line (with or without its newline) goes straight through.
 | --- | --- |
 | Appearance | Terminal font (monospace only, enumerated from the system), **Block and box characters**, **Remote text encoding**, terminal background (six presets or any colour) |
 | Behaviour | Word separator (with a live preview of what double-click will select), copy on select, **Idle sessions** (anti-idle + which nudge), **Idle keepalive** (stop after 1–744 h without input), **Storage** (where the files live) |
-| Highlighting | Five built-in keyword sets, custom keywords/regex with a colour, `.msyn` import |
+| Highlighting | Six built-in keyword sets (shell, bash scripts, nginx logs, nginx config, messages, data shapes), custom keywords/regex with a colour, `.msyn` import |
 
 The light/dark theme is the sun/moon icon in the status bar; `Ctrl+=` / `Ctrl+-` / `Ctrl+0` change the
 font size.

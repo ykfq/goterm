@@ -142,7 +142,7 @@ interface Settings {
 
 const SETTINGS_KEY = 'goterm.settings';
 /** Bumped when the meaning of the stored settings changes. */
-const SETTINGS_VERSION = 3;
+const SETTINGS_VERSION = 4;
 
 /**
  * Sidebar width bounds: any width the user drags to, up to half the window —
@@ -261,6 +261,11 @@ function loadSettings(): Settings {
     // never saw it, and it colours things the other sets do not claim — so it is
     // switched on once, for them, instead of waiting to be discovered.
     if ((parsed.settingsVersion ?? 1) < 2 && !highlight.includes('data')) highlight.push('data');
+    // v4 added the nginx config set, and it is switched on once for the same
+    // reason the data shapes were: someone who had already chosen their sets
+    // would never think to look for a rule they never saw. It is one-way — the
+    // next save stamps version 4, so a set the user then switches off stays off.
+    if ((parsed.settingsVersion ?? 1) < 4 && !highlight.includes('nginx-conf')) highlight.push('nginx-conf');
     return {
       settingsVersion: SETTINGS_VERSION,
       theme: parsed.theme === 'light' ? 'light' : 'dark',

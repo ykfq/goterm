@@ -30,9 +30,24 @@ describe('settings on disk', () => {
   it('turns the data set on once for settings saved before it existed', async () => {
     localStorage.setItem(KEY, JSON.stringify({ theme: 'light', fontSize: 13, highlight: ['shell', 'nginx'] }));
     const store = await freshStore();
-    expect(store.state.settings.highlight).toEqual(['shell', 'nginx', 'data']);
+    // Saved before either set existed, so both migrations apply.
+    expect(store.state.settings.highlight).toEqual(['shell', 'nginx', 'data', 'nginx-conf']);
     expect(store.state.settings.fontSize).toBe(13);
     expect(store.state.settings.theme).toBe('light');
+  });
+
+  it('turns the nginx config set on once for settings saved before it existed', async () => {
+    // Someone who already ticked their sets would never meet a rule they have
+    // never seen, so a new built-in set is offered once on the first load.
+    localStorage.setItem(KEY, JSON.stringify({ settingsVersion: 3, highlight: ['shell', 'data'] }));
+    const store = await freshStore();
+    expect(store.state.settings.highlight).toEqual(['shell', 'data', 'nginx-conf']);
+  });
+
+  it('does not resurrect the nginx config set after the user switched it off', async () => {
+    localStorage.setItem(KEY, JSON.stringify({ settingsVersion: 4, highlight: ['shell', 'data'] }));
+    const store = await freshStore();
+    expect(store.state.settings.highlight).toEqual(['shell', 'data']);
   });
 
   it('does not resurrect the data set after the user switched it off', async () => {
@@ -41,7 +56,9 @@ describe('settings on disk', () => {
       JSON.stringify({ settingsVersion: 2, theme: 'dark', highlight: ['shell'], wordSeparator: ' ' }),
     );
     const store = await freshStore();
-    expect(store.state.settings.highlight).toEqual(['shell']);
+    // `data` stays off — that is what the user chose. The config set arrives
+    // because this file predates it, which is the other half of the rule.
+    expect(store.state.settings.highlight).toEqual(['shell', 'nginx-conf']);
   });
 
   it('drops a background that is not a colour', async () => {

@@ -122,6 +122,103 @@ const SEVERITY =
 const SUCCESS = 'accepted|success|successful|started|started?|opened|enabled|active|listening|ok\\b';
 
 /**
+ * nginx's configuration language, which is not its log format.
+ *
+ * An access line is read by position (address, then time, then request, then
+ * status); a config line is `directive  argument;`. They share almost no
+ * vocabulary, so the config gets its own set and its own line sniffer.
+ *
+ * The two lists below are split for a reason. `NGINX_BLOCK` is the words that
+ * open a section; `NGINX_DIRECTIVES` is everything else worth colouring, kept to
+ * what a real server block actually contains rather than every symbol in the
+ * manual — a list of the whole language would colour half of any log line that
+ * was ever misread as config. `server` appears in both: inside an `upstream` it
+ * is a member line ending in `;`, not a section opening in `{`.
+ */
+const NGINX_BLOCK = [
+  'http', 'server', 'location', 'upstream', 'events', 'stream', 'mail', 'map', 'geo', 'geoip2',
+  'types', 'if', 'split_clients', 'limit_except', 'match', 'cache_use_stale',
+].join('|');
+
+const NGINX_DIRECTIVES = [
+  // core, process, events
+  'user', 'worker_processes', 'worker_cpu_affinity', 'worker_rlimit_nofile', 'worker_rlimit_core',
+  'worker_shutdown_timeout', 'worker_priority', 'env', 'daemon', 'master_process', 'pid', 'error_log',
+  'lock_file', 'pcre_jit', 'ssl_engine', 'use', 'multi_accept', 'accept_mutex', 'accept_mutex_delay',
+  'reuse_port', 'aio', 'aio_write', 'eventport', 'poll', 'thread_pool',
+  // files, locations, static
+  'root', 'alias', 'internal', 'etag', 'try_files', 'include', 'if_modified_since', 'expires',
+  'sendfile', 'tcp_nopush', 'tcp_nodelay', 'sendfile_max_chunk', 'postpone_output', 'output_buffers',
+  'directio', 'open_file_cache', 'open_file_cache_valid', 'open_file_cache_min_uses',
+  'open_file_cache_errors', 'open_file_cache_not_ok', 'log_not_found', 'log_subrequest',
+  'recursive_error_pages', 'server_tokens', 'msie_padding', 'port_in_redirect',
+  'server_name_in_redirect', 'absolute_redirect', 'merge_slashes', 'ignore_invalid_headers',
+  // request limits and buffers
+  'client_max_body_size', 'client_body_buffer_size', 'client_body_timeout', 'client_body_in_file_only',
+  'client_body_in_single_buffer', 'client_body_postpone_size', 'client_header_timeout',
+  'client_header_buffer_size', 'large_client_header_buffers', 'reset_timedout_connection',
+  'send_timeout', 'keepalive_timeout', 'keepalive_requests', 'keepalive_disable', 'keepalive_pool_size',
+  'lingering_close', 'lingering_time', 'lingering_timeout', 'limit_rate', 'limit_rate_after',
+  'request_pool_size', 'client_body_temp_path', 'proxy_temp_path', 'fastcgi_temp_path',
+  'scgi_temp_path', 'uwsgi_temp_path',
+  // hashing / sizes of internal tables
+  'types_hash_max_size', 'types_hash_bucket_size', 'server_names_hash_max_size',
+  'server_names_hash_bucket_size', 'map_hash_max_size', 'map_hash_bucket_size',
+  'variables_hash_max_size', 'variables_hash_bucket_size',
+  // logging, headers, errors
+  'access_log', 'log_format', 'open_log_file_cache', 'add_header', 'add_trailer', 'charset',
+  'charset_map', 'charset_types', 'override_charset', 'source_charset', 'error_page', 'types',
+  'default_type', 'server_name', 'server_name_include', 'listen', 'protocol', 'server',
+  // rewriting and flow
+  'rewrite', 'return', 'break', 'set', 'uninitialized_variable_warn', 'rewrite_log', 'limit_req',
+  'limit_req_zone', 'limit_req_status', 'limit_req_log_level', 'limit_conn', 'limit_conn_zone',
+  'limit_conn_status', 'limit_conn_log_level', 'allow', 'deny', 'satisfy', 'auth_basic',
+  'auth_basic_user_file', 'auth_request', 'auth_request_set', 'auth_delay', 'real_ip_header',
+  'real_ip_recursive', 'set_real_ip_from', 'geoip_country', 'geoip_city', 'mirror',
+  'mirror_request_body',
+  // proxy
+  'proxy_pass', 'proxy_method', 'proxy_bind', 'proxy_http_version', 'proxy_set_header',
+  'proxy_set_body', 'proxy_pass_request_body', 'proxy_pass_request_headers', 'proxy_redirect',
+  'proxy_cookie_domain', 'proxy_cookie_path', 'proxy_cookie_flags', 'proxy_hide_header',
+  'proxy_pass_header', 'proxy_ignore_headers', 'proxy_intercept_errors', 'proxy_next_upstream',
+  'proxy_next_upstream_tries', 'proxy_next_upstream_timeout', 'proxy_buffering', 'proxy_buffer_size',
+  'proxy_buffers', 'proxy_busy_buffers_size', 'proxy_max_temp_file_size', 'proxy_temp_file_write_size',
+  'proxy_cache', 'proxy_cache_path', 'proxy_cache_valid', 'proxy_cache_key', 'proxy_cache_lock',
+  'proxy_cache_use_stale', 'proxy_cache_revalidate', 'proxy_cache_bypass', 'proxy_no_cache',
+  'proxy_cache_min_uses', 'proxy_cache_methods', 'proxy_cache_background_update',
+  'proxy_cache_convert_head', 'proxy_connect_timeout', 'proxy_send_timeout', 'proxy_read_timeout',
+  'proxy_ssl_name', 'proxy_ssl_server_name', 'proxy_ssl_verify', 'proxy_ssl_verify_depth',
+  'proxy_ssl_certificate', 'proxy_ssl_certificate_key', 'proxy_ssl_trusted_certificate',
+  'proxy_ssl_ciphers', 'proxy_ssl_protocols', 'proxy_ssl_session_reuse', 'proxy_ssl_dhparam',
+  'proxy_ssl_password_file', 'proxy_protocol_timeout', 'proxy_protocol',
+  // upstreams
+  'least_conn', 'ip_hash', 'hash', 'random', 'keepalive', 'zone', 'resolve', 'resolver',
+  'resolver_timeout', 'health_check',
+  // fastcgi / uwsgi / scgi / grpc
+  'fastcgi_pass', 'fastcgi_index', 'fastcgi_split_path_info', 'fastcgi_param', 'fastcgi_hide_header',
+  'fastcgi_pass_header', 'fastcgi_ignore_headers', 'fastcgi_intercept_errors', 'fastcgi_buffering',
+  'fastcgi_buffer_size', 'fastcgi_buffers', 'fastcgi_busy_buffers_size', 'fastcgi_cache',
+  'fastcgi_cache_valid', 'fastcgi_cache_path', 'fastcgi_cache_key', 'fastcgi_cache_use_stale',
+  'fastcgi_connect_timeout', 'fastcgi_send_timeout', 'fastcgi_read_timeout', 'fastcgi_next_upstream',
+  'fastcgi_keep_conn', 'uwsgi_pass', 'uwsgi_param', 'uwsgi_index', 'uwsgi_read_timeout',
+  'uwsgi_buffering', 'scgi_pass', 'scgi_param', 'scgi_read_timeout', 'grpc_pass', 'grpc_set_header',
+  'grpc_read_timeout', 'grpc_send_timeout',
+  // compression, content filters
+  'gzip', 'gzip_comp_level', 'gzip_disable', 'gzip_min_length', 'gzip_buffers', 'gzip_http_version',
+  'gzip_proxied', 'gzip_types', 'gzip_vary', 'gzip_window', 'gzip_static', 'sub_filter',
+  'sub_filter_once', 'sub_filter_types', 'mp4', 'flv', 'secure_link', 'stub_status', 'status', 'perl',
+  // tls and HTTP/2-3
+  'ssl', 'ssl_certificate', 'ssl_certificate_key', 'ssl_password_file', 'ssl_protocols', 'ssl_ciphers',
+  'ssl_prefer_server_ciphers', 'ssl_session_cache', 'ssl_session_timeout', 'ssl_session_tickets',
+  'ssl_session_ticket_key', 'ssl_dhparam', 'ssl_ecdh_curve', 'ssl_crl', 'ssl_stapling',
+  'ssl_stapling_verify', 'ssl_trusted_certificate', 'ssl_buffer_size', 'ssl_early_data', 'http2',
+  'http3', 'early_hints', 'quic_retry', 'quic_gso', 'quic_host_key', 'quic_stateless_reset',
+].join('|');
+
+/** Anything that may stand at the start of a config statement. */
+const NGINX_STATEMENT = `${NGINX_BLOCK}|${NGINX_DIRECTIVES}`;
+
+/**
  * Data shapes rather than a language: addresses, ids, numbers, timestamps.
  *
  * These apply to every line, whatever vocabulary it speaks, and only after that
@@ -226,6 +323,51 @@ export const HIGHLIGHT_SETS: HighlightSet[] = [
     ],
   },
   {
+    id: 'nginx-conf',
+    scope: 'vocabulary',
+    label: 'nginx config',
+    description:
+      'Directives, sections, variables, paths and values in nginx.conf and conf.d — what `nginx -T` or `cat` prints, not the access log.',
+    rules: [
+      { example: '# note', re: /(?:^|(?<=\s))#[^\x1b\r\n]*/g, sgr: '\x1b[90m' },
+      { example: '"max-age=31536000"', re: /"(?:[^"\\\x1b]|\\.)*"|'(?:[^'\\\x1b]|\\.)*'/g, sgr: '\x1b[32m' },
+      // URL before the path rule, so `http://backend` is not eaten from the middle.
+      // `;` is excluded here though the data set allows it: in a config file the
+      // semicolon is the end of the statement, and swallowing it would colour the
+      // one character that tells a reader where the directive stops.
+      { example: 'http://backend', re: /\bhttps?:\/\/[^\s<>"'`;]+/g, sgr: '\x1b[4;36m' },
+      { example: '$document_root', re: /\$(?:\{[^}\x1b]{1,64}\}|[A-Za-z_][A-Za-z0-9_]{0,63})/g, sgr: '\x1b[35m' },
+      {
+        example: 'server { / location',
+        re: new RegExp(`(?<![\\w$.-])(?:${NGINX_BLOCK})(?![\\w-])`, 'g'),
+        sgr: '\x1b[1;35m',
+      },
+      {
+        example: 'proxy_pass',
+        // `/` and `.` in the lookbehind: a directive name inside a path or a
+        // dotted word (`mime.types`) is not a directive.
+        re: new RegExp(`(?<![\\w$./-])(?:${NGINX_DIRECTIVES})(?![\\w-])`, 'g'),
+        sgr: '\x1b[1;36m',
+      },
+      // location modifiers: they are operators, not values.
+      { example: '= / ^~ / ~ / ~*', re: /(?<=\s)(?:\^~|~\*?|=)(?=\s)/g, sgr: '\x1b[1;30m' },
+      {
+        example: 'on / off / permanent',
+        re: /(?<![\w$.-])(?:on|off|yes|no|true|false|auto|always|never|last|break|stop|permanent|redirect|master|best)(?![\w-])/g,
+        sgr: '\x1b[1;33m',
+      },
+      {
+        example: '10m / 1g / 30s / 80',
+        // The lookbehind and the lookahead keep an IP, a version and `http2` out;
+        // only a whole number standing on its own is a size, a port or a timeout.
+        re: /(?<![\w$.:])(?:\d+(?:\.\d+)?[kKmMgGtT][bB]?|\d+[smhd]|\d{1,5})(?![\w.])/g,
+        sgr: '\x1b[33m',
+      },
+      { example: '/var/log/nginx/error.log', re: /(?<![\w$~.-])(?:\/[\w.~+-]+)+\/?(?![\w-])/g, sgr: '\x1b[1;34m' },
+      { example: '; { }', re: /[;{}]/g, sgr: '\x1b[1;30m' },
+    ],
+  },
+  {
     id: 'syslog',
     scope: 'vocabulary',
     label: 'Linux messages',
@@ -255,6 +397,29 @@ export const DEFAULT_HIGHLIGHT_SETS = HIGHLIGHT_SETS.map((set) => set.id);
 const NGINX_ACCESS =
   /(?:\d{1,3}\.){3}\d{1,3}\s+-\s+\S+\s+\[(?!\x1b)[^\]]+\]\s+"(?:GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH|CONNECT|TRACE)\s/;
 const NGINX_ERROR = /\d{4}[-\/]\d{2}[-\/]\d{2} \d{2}:\d{2}:\d{2} \[(?:emerg|alert|crit|error|warn|notice|info)\]/;
+/**
+ * A config statement: a keyword nginx owns at the start of the line — after the
+ * indent, and after whatever the command that printed the file put in front of
+ * it — then arguments, then `;` or `{`.
+ *
+ * The prefix matters more than it looks. Nobody `cat`s a config file plain very
+ * often; the shapes that actually reach a terminal are `cat -n` (a number and a
+ * tab), `grep -n` (`24:`) and `grep -rn /etc/nginx` (`nginx.conf:24:`), so all
+ * three are allowed for, and a statement still has to follow them.
+ *
+ * Two details are the whole craft beyond that. Quoted spans are matched as units
+ * so a `;` inside `"max-age=31536000; includeSubDomains"` is not mistaken for the
+ * end of the statement. And a flag-looking token disqualifies the line: `set -e;`
+ * is a shell line whose first word nginx also owns, and without that guard a
+ * loose pattern reads every `set`/`return`/`break` in a script as server config.
+ */
+const NGINX_CONF_LINE = new RegExp(
+  '^[ \\t]*(?:[^\\s:]+:\\d+[-:][ \\t]*)?(?:\\d+[-:\\t][ \\t]*)?(?:' +
+    `(?:${NGINX_STATEMENT})(?![\\w-])(?![^#\\x1b{}]*(?:[ \\t])-)` +
+    '(?:[^"\'\\x1b{};]|"[^"\\x1b]*"|\'[^\'\\x1b]*\')*' +
+    '(?:;|\\{)[ \\t]*(?:#[^\\n]*)?\\r?\\n?)$',
+);
+
 const SYSLOG_LINE = /(?:^|\s)(?:[A-Z][a-z]{2} {1,2}\d{1,2} \d{2}:\d{2}:\d{2}|\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z?)\s+\S+\s+\S+(?:\[\d+\])?:/;
 const BASH_SCRIPT =
   /(?:^|\s)#!\/(?:usr\/)?bin\/(?:env\s+)?\w*(?:ba|z|k|da)?sh\b|(?:^|\s)(?:then|fi|done|esac|elif)\b|(?:^|\s)function\s+\w+|\w+\s*\(\)\s*\{/;
@@ -451,11 +616,15 @@ export class OutputHighlighter {
   private setsForLine(line: string): HighlightSet[] {
     const find = (id: string) => this.vocabulary.find((set) => set.id === id);
     const nginx = find('nginx');
+    const nginxConf = find('nginx-conf');
     const syslog = find('syslog');
     const bash = find('bash');
     const shell = find('shell');
 
     if (nginx && (NGINX_ACCESS.test(line) || NGINX_ERROR.test(line))) return [nginx];
+    // Config before the shell fallback and before bash: `set`, `return` and
+    // `break` are words both languages use, and the line's shape decides.
+    if (nginxConf && NGINX_CONF_LINE.test(line)) return [nginxConf];
     if (syslog && SYSLOG_LINE.test(line)) return [syslog];
     if (bash && BASH_SCRIPT.test(line)) return shell ? [bash, shell] : [bash];
     return shell ? [shell] : [];
