@@ -72,7 +72,8 @@ Hand the repository to any AI coding assistant with one line:
 - Dark and light themes; the window frame follows the theme (DWM). Keyword colouring with per-line
   vocabularies and `.msyn` import, six built-in rule sets: shell commands, bash scripts, nginx
   access/error logs, nginx **config** (`nginx -T`, `cat nginx.conf`, and `grep -n` / `cat -n` output of
-  those files), Linux messages, and data shapes on any line.
+  those files), Linux messages, and data shapes on any line. Full-screen programs keep their own
+  colouring: while `vim`, `nano`, `htop` and friends own the screen, nothing is inserted.
 - Settings apply to every open tab instantly and persist.
 - The host sidebar is resizable (drag its right edge: any width up to half the window, remembered
 between runs; double-click the edge to go back to the default, drag it to the left edge to collapse the

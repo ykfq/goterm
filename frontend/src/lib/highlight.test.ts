@@ -133,6 +133,41 @@ describe('OutputHighlighter: escape sequences', () => {
     expect(out).toMatch(/\x1b\[1;36mls\x1b\[0m after/);
   });
 
+  it('does not insert anything into an editor screen', () => {
+    // Rows of a syntax-highlighted nginx.conf as vim paints them: position the
+    // cursor, then write text with a colour of its own. This is the case the
+    // highlighter must lose every argument with — not one byte may be added.
+    const rows =
+      '\x1b[?1049h' +
+      '\x1b[1;1H\x1b[38;2;255;255;255mserver {\x1b[m' +
+      '\x1b[2;1H\x1b[1;34mlisten\x1b[m 443 ssl;' +
+      '\x1b[3;1H\x1b[36mlocation\x1b[m /api {';
+    expect(run(rows)).toBe(rows);
+  });
+
+  it('does not let the editor colour escape the screen it owned', () => {
+    // vim paints with a 256-colour pair and quits. The shell prompt that follows
+    // must not inherit it: the highlighter replays the program's style after each
+    // token it paints, and that replay used to carry vim's palette out of the
+    // editor — every highlighted word on the prompt came back vim-coloured.
+    const session = '\x1b[?1049h\x1b[38;5;196mvim text\x1b[?1049l\r\nroot@web:~# ls -la\r\n';
+    const out = run(session);
+    const afterExit = out.slice(out.indexOf('root@web'));
+    expect(afterExit).not.toContain('38;5;196');
+    expect(afterExit).toMatch(/\x1b\[1;36mls/);
+  });
+
+  it('leaves a cell-painting program alone even without the alternate screen', () => {
+    // The backstop for an editor that never sends `?1049h`: absolute cursor
+    // addressing plus a fragment with no line break is a screen repaint.
+    const row = '\x1b[12;1Hserver_name example.com;';
+    expect(run(row)).toBe(row);
+
+    // The next line of ordinary output is text again, and is highlighted.
+    const after = run('\x1b[12;1Hserver_name example.com;\r\nroot@web:~# ls -la\r\n');
+    expect(after).toMatch(/\x1b\[1;36mls/);
+  });
+
   it('never decorates a trzsz banner', () => {
     const banner = '::TRZSZ:TRANSFER:R:1.2.0:1234\r\n';
     expect(run(banner)).toBe(banner);

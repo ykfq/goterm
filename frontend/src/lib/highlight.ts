@@ -456,6 +456,14 @@ export class OutputHighlighter {
   private lineTinted = false;
   private altScreen = false;
   /**
+   * Set once a program positions the cursor absolutely, cleared by the next line
+   * of ordinary output. While it is set, a fragment without a line break is that
+   * program's screen painting and is left alone — the backstop for an editor that
+   * never enters the alternate screen (vim with an empty `t_ti`, `nano` under
+   * some configs), which the `altScreen` flag alone would miss.
+   */
+  private screenHint = false;
+  /**
    * An escape sequence that the chunk boundary cut in half. It is carried to the
    * next chunk rather than guessed at, so a colour can never be inserted inside
    * a cursor-movement sequence that happened to arrive in two pieces.
@@ -509,6 +517,7 @@ export class OutputHighlighter {
     this.style = '';
     this.lineTinted = false;
     this.altScreen = false;
+    this.screenHint = false;
     this.carry = '';
   }
 
@@ -565,6 +574,12 @@ export class OutputHighlighter {
   /** Colour one stretch of ordinary text. The active style is constant here. */
   private paint(run: string): string {
     if (this.altScreen) return run;
+    // A fragment with no line break after an absolute cursor move is a screen
+    // repaint — a row vim is drawing cell by cell — not a line of output. The
+    // program will paint over anything inserted, and our RESETs would only
+    // interrupt the colour it just set.
+    if (this.screenHint && !run.includes('\n')) return run;
+    if (run.includes('\n')) this.screenHint = false;
 
     let out = '';
     for (const line of run.split(/(?<=\n)/)) {
@@ -654,11 +669,23 @@ export class OutputHighlighter {
       const code = body.startsWith('?') ? body.slice(1) : '';
       if (code === '1049' || code === '1047' || code === '47') {
         this.altScreen = final === 'h';
-        if (this.altScreen) {
-          this.style = '';
-          this.lineTinted = false;
-        }
+        // Both directions, deliberately. On the way in the style belongs to a
+        // program whose screen we leave alone; on the way out it is that editor's
+        // *last* colour — often truecolor or a 256-colour pair — and keeping it
+        // made every later highlight replay it, so the shell prompt after `:q`
+        // came back tinted with vim's palette. Style is the program's; when the
+        // program is gone, it goes too.
+        this.style = '';
+        this.lineTinted = false;
+        this.screenHint = false;
       }
+      return;
+    }
+    // Absolute cursor addressing: the program is painting cells, not printing
+    // lines. vim, nano and htop all do this; `cat`, `tail` and `less` do not (a
+    // pager positions once and then writes text with newlines).
+    if (final === 'H' || final === 'f') {
+      this.screenHint = true;
       return;
     }
     if (final !== 'm') return;
