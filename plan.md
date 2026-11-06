@@ -229,7 +229,7 @@
 | 事项 | 状态 |
 | --- | --- |
 | Go 侧 8 个有测试的包（共 12 个包；真实 SSH 服务器：认证、2FA、PTY、resize、双向二进制保真、断线、并发、保活不写 PTY、复制不二次登录、跳板机隧道、导出文件往返/篡改、DWM 属性回读、状态目录优先级与拒绳） | ✅ |
-| 前端 **399** 个 vitest 用例 / 40 文件（含真实 trzsz 客户端回放、真实 ZMODEM 会话对端、走真实终端管道的端到端） | ✅ |
+| 前端 **421** 个 vitest 用例 / 43 文件（含真实 trzsz 客户端回放、真实 ZMODEM 会话对端、走真实终端管道的端到端） | ✅ |
 | 前端测试把 `@xterm/addon-unicode-graphemes` 换成桩：上游 0.4.0 在 Node 下按 Buffer 池切片读错表头直接崩（应用里没有 `Buffer`，走 `atob` 分支没这个问题），见 DECISIONS §4 | ✅ |
 | `vue-tsc --noEmit` 严格模式 0 错误；`gofmt` / `go vet` 干净 | ✅ |
 | GUI 冒烟脚本：`gui-check` / `gui-demo` / `gui-transfer` / `frame-check` | ✅ |
@@ -246,15 +246,16 @@
 ```powershell
 go test ./...                                  # Go：SSH 栈、主机存储、密钥、绑定
 go vet ./... ; gofmt -l .                      # 应无输出
-npm --prefix frontend test                     # 399 个用例
+npm --prefix frontend test                     # 421 个用例
 npm --prefix frontend run typecheck            # vue-tsc，严格
 wails3 build                                   # -> bin\goterm.exe
 ```
 
 ### 发版流程（不要本地打包上传）
 
-当前版本 **1.1.0**（2026-11-04 已发布：<https://github.com/ykfq/goterm/releases/tag/v1.1.0>）：
-TUI 里的复制（OSC 52）与输入法红叉修复，见 §4 / §9。
+当前版本 **1.2.0**（2026-11-06 打 tag；二进制由 Actions 根据 tag 构建后挂到
+<https://github.com/ykfq/goterm/releases/tag/v1.2.0>）：闲置停保活（§2）、SFTP 文件浏览器（§6）、
+侧栏可拖动与折叠（§7）。
 
 二进制不进代码仓库，由 GitHub Actions 构建并挂到 Release 上：
 
@@ -262,9 +263,9 @@ TUI 里的复制（OSC 52）与输入法红叉修复，见 §4 / §9。
 # 1) 把要发的版本写进 app.go 的 Version、build/config.yml、build/windows/info.json（PE 文件属性）、
 #    frontend/package.json（连同 package-lock 的两处）；两份 README 的下载文件名也要改
 # 2) 打 tag 并推送（这一步会触发 workflow）
-git tag -a v1.1.0 -m "GoTerm 1.1.0"
+git tag -a v1.2.0 -m "GoTerm 1.2.0"
 git push origin main
-git push origin v1.1.0
+git push origin v1.2.0
 ```
 
 workflow 在 `windows-latest` 上装 Go（按 `go.mod`）+ Node 20 + 固定版 wails3，跑 `wails3 build`，

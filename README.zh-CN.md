@@ -74,7 +74,7 @@
 ## 安装
 
 从仓库的 [**Releases**](https://github.com/ykfq/goterm/releases) 页面下载
-`goterm-v1.1.0-windows-x64.exe` 和对应的 `.md5` / `.sha256`。那里的二进制是 GitHub Actions 根据 tag
+`goterm-v1.2.0-windows-x64.exe` 和对应的 `.md5` / `.sha256`。那里的二进制是 GitHub Actions 根据 tag
 构建的（[`.github/workflows/release.yml`](.github/workflows/release.yml)），不放进代码仓库。
 
 **单文件便携版**，没有安装包。WebView2（Wails 内嵌的浏览器引擎）在 Windows 10/11 上是自带的；

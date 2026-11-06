@@ -82,7 +82,7 @@ sidebar — `Ctrl+Shift+B` brings it back at the width it had).
 
 ## Install
 
-Download `goterm-v1.1.0-windows-x64.exe` (and the matching `.md5` / `.sha256`) from the repository's
+Download `goterm-v1.2.0-windows-x64.exe` (and the matching `.md5` / `.sha256`) from the repository's
 [**Releases**](https://github.com/ykfq/goterm/releases) page. The binaries there are built by GitHub
 Actions from the tag ([`.github/workflows/release.yml`](.github/workflows/release.yml)), never
 committed to the repository.
