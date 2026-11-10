@@ -119,6 +119,7 @@
 | 需求 | 状态 |
 | --- | --- |
 | **`Ctrl+W` 删词不能顺手关掉标签**；`Ctrl+K/T/B` 同理（tmux 前缀被抢） | ✅ |
+| **点一下标签，键盘就在终端里，可以直接输入**（不用再点一次终端）。真机实测：post-flush 回调时新窗格**仍是 `display:none`**，原来的聚焦是空操作；现在一帧后若窗格已在屏上、键盘又没被真正的控件拿走，就再讨一次（`isRendered(activeElement)` 把“焦点在已隐藏窗格里”也算作无主） | ✅ 🧪 |
 | 应用命令改用 `Ctrl+Shift+…`；焦点在侧栏/对话框时旧组合仍可用 | ✅ |
 | 快捷键不再顺带往会话里多发一个控制字符 | ✅ |
 | 选中即复制（默认开；只在松手时、且只在终端 pane 内按下才触发） | ✅ |
@@ -147,6 +148,8 @@
 | Reconnect：关掉重拨，口令/动态口令提示与首连一致 | ✅ |
 | ad-hoc 会话没有存凭据 → Reconnect 置灰并在 tooltip 说明原因 | ✅ |
 | **拖拽调整标签顺序**（悬停即换位，不用等松手） | ✅ 🧪 |
+| **输出太猛时内存涨到 1G** → 终端解析积压超过 4 MB 就请 Go 暂停读这一条会话（SSH 读取阻塞、TCP 窗口接管），降到 1 MB 以下再恢复；还没有终端的会话输出暂存超过 2 MB 也先暂停（原来 4 MB 上限会**丢掉**整段），见 DECISIONS §B-12 | ✅ 🧪 |
+| 滚动回看行数可设（默认 4000，200–50000；200 列 × 8000 行约 3.4 MB/标签，实测见 DECISIONS §B-12） | ✅ |
 | **TUI 里断线后切回那个标签，右上角被 "…: session is closed" 刷屏** → `acceptsInput()` + `markSessionGone()` + 4 秒同文本去重 | ✅ 🧪 |
 | 断开条（Reconnect / Close tab）曾被右下角 toast 盖住导致点不动 | ✅ |
 
@@ -196,6 +199,7 @@
 | 通知栈（toast）改右上角，不再遮住会话自己的控件 | ✅ |
 | New host 输入框占位符太像已填内容 → 用更淡的 `--placeholder` | ✅ |
 | 设置改动即时作用于所有已开标签并持久化；切页只显隐不重建 | ✅ |
+| Appearance → **Scrollback**（每标签保留多少行）与 Behaviour → **Session log**（把每个会话的输出写进文件，默认关闭，对已开会话也生效） | ✅ |
 | **状态目录可改**（设置 → Behaviour → Storage）：默认 `%APPDATA%\goterm`，指针文件 `prefs.json` 永远留在默认目录，换了下次启动生效，不自动搬文件，`GOTERM_DIR` 优先 | ✅ |
 
 对比度已成规则：`lib/theme-tokens.test.ts` 禁止任何未入层的元素选择器设置 `color`/`font`，
@@ -220,6 +224,7 @@
 | 需求 | 状态 |
 | --- | --- |
 | **TUI 里输入法变红叉"已禁用输入法"、切不回中文** → 三条焦点路一起补：切标签只在窗格可见后聚焦（`flush: 'post'` 收进 store 一处）、键盘掉到 `<body>` 时终端自己收回（菜单/对话框关掉时按钮跟着没了）、切回窗口时若终端仍占着焦点就做一次 focus 交接重建输入上下文 | ✅ 🧪 |
+| 2026-11-10 复查：真实 Chromium 里 post-flush 回调时新窗格**仍是 `display:none`**（换窗格晚一个 flush），所以上面第一条在真机上仍是空操作；现在改成“同步不成功就一帧后再试”，见 §4 与 DECISIONS §B-12 | ✅ 🧪 |
 | 上面那条修完 `Shift+Alt` 仍切不回中文 → 那就属于 OS 热键 / WebView2 合成层面，另做 | ⏸️ |
 
 ---
@@ -229,7 +234,8 @@
 | 事项 | 状态 |
 | --- | --- |
 | Go 侧 8 个有测试的包（共 12 个包；真实 SSH 服务器：认证、2FA、PTY、resize、双向二进制保真、断线、并发、保活不写 PTY、复制不二次登录、跳板机隧道、导出文件往返/篡改、DWM 属性回读、状态目录优先级与拒绳） | ✅ |
-| 前端 **434** 个 vitest 用例 / 43 文件（含真实 trzsz 客户端回放、真实 ZMODEM 会话对端、走真实终端管道的端到端） | ✅ |
+| 前端 **451** 个 vitest 用例 / 45 文件（含真实 trzsz 客户端回放、真实 ZMODEM 会话对端、走真实终端管道的端到端、输出积压水位的滞回规则、真实 Chromium 里验证过的“切标签后键盘在终端里”） | ✅ |
+| Go 侧新增：输出流控（暂停后不再发事件、恢复后一个字节不少、暂停中关会话不悬挂）与会话日志（与终端收到字节完全一致、停用即止、每会话一文件、文件名不触 Windows 禁忌）各一组测试 | ✅ |
 | 前端测试把 `@xterm/addon-unicode-graphemes` 换成桩：上游 0.4.0 在 Node 下按 Buffer 池切片读错表头直接崩（应用里没有 `Buffer`，走 `atob` 分支没这个问题），见 DECISIONS §4 | ✅ |
 | `vue-tsc --noEmit` 严格模式 0 错误；`gofmt` / `go vet` 干净 | ✅ |
 | GUI 冒烟脚本：`gui-check` / `gui-demo` / `gui-transfer` / `frame-check` | ✅ |
@@ -239,23 +245,23 @@
 | 测试要"会咬人"：每轮关键修复都用破坏性改动验证过对应测试会失败 | ✅ |
 | NSIS 安装包（`wails3 package`） | ❌ 未做 |
 | Linux/macOS 字体枚举（fontconfig/CoreText） | ❌ 当前是内置短列表 |
-| 每主机 profile、`~/.ssh/config` 解析、端口转发、会话日志 | ❌ 未做 |
+| 每主机 profile、`~/.ssh/config` 解析、端口转发 | ❌ 未做 |
 
 验证命令（**全绿才算完成**）：
 
 ```powershell
 go test ./...                                  # Go：SSH 栈、主机存储、密钥、绑定
 go vet ./... ; gofmt -l .                      # 应无输出
-npm --prefix frontend test                     # 434 个用例
+npm --prefix frontend test                     # 451 个用例
 npm --prefix frontend run typecheck            # vue-tsc，严格
 wails3 build                                   # -> bin\goterm.exe
 ```
 
 ### 发版流程（不要本地打包上传）
 
-当前版本 **1.3.0**（2026-11-06 打 tag；二进制由 Actions 根据 tag 构建后挂到
-<https://github.com/ykfq/goterm/releases/tag/v1.3.0>）：闲置停保活（§2）、SFTP 文件浏览器（§6）、
-侧栏可拖动与折叠（§7）、nginx 配置文件高亮（§3）、全屏编辑器保留自身配色（§3）。
+当前版本 **1.4.0**（2026-11-10 打 tag；二进制由 Actions 根据 tag 构建后挂到
+<https://github.com/ykfq/goterm/releases/tag/v1.4.0>）：切标签后键盘直接落在终端里（§4/§9）、
+大输出的流控与可调滚动回看（§5）、会话日志（§7）。
 
 二进制不进代码仓库，由 GitHub Actions 构建并挂到 Release 上：
 
@@ -263,9 +269,9 @@ wails3 build                                   # -> bin\goterm.exe
 # 1) 把要发的版本写进 app.go 的 Version、build/config.yml、build/windows/info.json（PE 文件属性）、
 #    frontend/package.json（连同 package-lock 的两处）；两份 README 的下载文件名也要改
 # 2) 打 tag 并推送（这一步会触发 workflow）
-git tag -a v1.3.0 -m "GoTerm 1.3.0"
+git tag -a v1.4.0 -m "GoTerm 1.4.0"
 git push origin main
-git push origin v1.3.0
+git push origin v1.4.0
 ```
 
 workflow 在 `windows-latest` 上装 Go（按 `go.mod`）+ Node 20 + 固定版 wails3，跑 `wails3 build`，
@@ -328,7 +334,7 @@ dist 压成 zip 再 embed（净省约 630 KB）、self-test 挪出生产包（�
    `Shift+拖选` 是否都进了剪贴板（**在 `tmux` 里跑 TUI 还不行**：透传包成 DCS，未解析）。
 2. **后台标签意外断线要不要提示**？现在所有断开都不弹，只写进面板与标签状态。
 3. IME 第一条（TUI 里 Shift+Alt 切不回中文）仍是 ⏸️，要不要继续做。
-4. ❌ 未做列表（per-host profile / `~/.ssh/config` / 端口转发 / 会话日志 / NSIS 安装包 /
+4. ❌ 未做列表（per-host profile / `~/.ssh/config` / 端口转发 / NSIS 安装包 /
    Linux 字体枚举）要不要排期。
 5. 中文乱码分两种情形：只是**显示**乱 → 设置里选 GB18030；**打过去的字**在远端变问号 → 那是
    远端读输入用 GBK 而本应用按 UTF-8 发送，需要另做方案。实测属于哪一种再说。

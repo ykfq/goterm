@@ -434,6 +434,25 @@ export const DEFAULT_FONTS =
  */
 export const DEFAULT_WORD_SEPARATOR = ' ()[]{}\'"';
 
+/**
+ * Scrollback bounds, in lines.
+ *
+ * This is the terminal's long-term memory and almost all of a tab's retained
+ * bytes: a 200-column pane at 8000 lines holds a few megabytes per tab, which
+ * adds up over a row of tabs. The default is deliberately below xterm's own:
+ * four thousand lines is still a long history, and the setting lets anyone who
+ * wants more pay for it knowingly. Zero is not offered — a terminal that cannot
+ * scroll back is a bug, not a preference.
+ */
+export const SCROLLBACK_DEFAULT = 4000;
+export const SCROLLBACK_MIN = 200;
+export const SCROLLBACK_MAX = 50000;
+
+export function clampScrollback(lines: number): number {
+  if (!Number.isFinite(lines)) return SCROLLBACK_DEFAULT;
+  return Math.min(SCROLLBACK_MAX, Math.max(SCROLLBACK_MIN, Math.round(lines)));
+}
+
 /** CSS stack tail: a custom family never loses its monospace fallback. */
 export function fontStack(family: string): string {
   const trimmed = family.trim();
@@ -526,6 +545,13 @@ export interface CreateTerminalOptions {
    */
   onPaste?: (text: string) => void;
   scrollback?: number;
+  /**
+   * Characters handed to xterm but not parsed yet. The app uses this to stop
+   * reading from the server when the screen falls behind — the difference would
+   * otherwise pile up in WebView2's memory during a firehose (`cat` of a big
+   * file), which is what turned one busy tab into a gigabyte.
+   */
+  onBacklog?: (queuedChars: number) => void;
   theme?: ThemeName;
   /** Remote is a Windows shell (cmd/PowerShell) — changes trzsz framing. */
   isWindowsShell?: boolean;
@@ -546,6 +572,15 @@ export interface TerminalBridge {
   write: (bytes: Uint8Array) => void;
   /** Re-measure the container; returns the new size when it changed. */
   fitNow: () => { cols: number; rows: number } | null;
+  /**
+   * Characters accepted by xterm but not parsed yet. The store pauses the SSH
+   * reader when this crosses a high-water mark, and resumes it when it drains.
+   */
+  queuedBytes: () => number;
+  /** Change how many lines of scrollback xterm keeps; applied at once. */
+  setScrollback: (lines: number) => void;
+  /** Write app-authored text (not server bytes) — a notice inside the pane. */
+  writeText: (text: string) => void;
   focus: () => void;
   /**
    * Hand the keyboard to this terminal again, even if it already has it.
@@ -642,7 +677,7 @@ export function createTerminalBridge(options: CreateTerminalOptions): TerminalBr
      * That is a taste call, so it is a setting rather than a fixed choice.
      */
     customGlyphs: continuousGlyphs,
-    scrollback: options.scrollback ?? 8000,
+    scrollback: clampScrollback(options.scrollback ?? SCROLLBACK_DEFAULT),
     allowProposedApi: true,
     logLevel: 'warn',
     theme: themeFor(currentTheme, customBackground),
@@ -651,6 +686,28 @@ export function createTerminalBridge(options: CreateTerminalOptions): TerminalBr
   // What the remote writes in. UTF-8 hands xterm the bytes untouched; anything else
   // is decoded here, streaming, so a character split across two chunks survives.
   const remote = new RemoteTextDecoder(options.encoding ?? 'utf-8');
+
+  // --- output backlog -------------------------------------------------------
+  //
+  // `term.write` only queues: parsing happens on xterm's own schedule. If server
+  // output arrives faster than that (a `cat` of a huge file is the usual case),
+  // the queue is the app's memory. Counting what has been handed over but not
+  // parsed yet is what lets the store tell Go to stop reading, instead of
+  // hoping the queue stays small. xterm's own answer to an overlong queue is to
+  // discard data with a console error, so slowing the source is not a nicety.
+  let queuedChars = 0;
+  let disposed = false;
+
+  const writeTerm = (data: string | Uint8Array): void => {
+    if (!data || disposed) return;
+    const size = data.length;
+    queuedChars += size;
+    options.onBacklog?.(queuedChars);
+    term.write(data, () => {
+      queuedChars = Math.max(0, queuedChars - size);
+      if (!disposed) options.onBacklog?.(queuedChars);
+    });
+  };
 
   const el = document.createElement('div');
   el.className = 'terminal-host';
@@ -702,7 +759,7 @@ export function createTerminalBridge(options: CreateTerminalOptions): TerminalBr
 
   // trzsz-js was written for a host with Node's process object (see
   // bindTrzszStdout); the terminal is where its closing words belong.
-  bindTrzszStdout(options.id, (text) => term.write(text));
+  bindTrzszStdout(options.id, (text) => writeTerm(text));
 
   const trzsz = new TrzszFilter({
     terminalColumns: term.cols,
@@ -717,12 +774,12 @@ export function createTerminalBridge(options: CreateTerminalOptions): TerminalBr
       // runs only when no transfer is in flight (file traffic has no words).
       const paint = (bytes: Uint8Array) => {
         const chunk = remote.decode(trzsz.isTransferringFiles() ? bytes : highlighter.process(bytes));
-        if (chunk.length) term.write(chunk);
+        if (chunk.length) writeTerm(chunk);
       };
       if (typeof output === 'string') {
         // Our own words (the transfer's clatter), not the remote's: already text, so
         // the remote's encoding must not be applied to it.
-        term.write(displayBannerBytes(output) as string);
+        writeTerm(displayBannerBytes(output) as string);
         return;
       }
       if (output instanceof Uint8Array) {
@@ -758,7 +815,7 @@ export function createTerminalBridge(options: CreateTerminalOptions): TerminalBr
   const output = new ServerOutputStream(trzsz, (bytes, error) => {
     // Bytes the filter would not take, still the remote's: same decoding as above.
     const chunk = remote.decode(bytes);
-    if (chunk.length) term.write(chunk);
+    if (chunk.length) writeTerm(chunk);
     const message = error instanceof Error ? error.message : String(error);
     // The bytes still went through — the stream never eats output — but a
     // stopped transfer's complaint is not worth interrupting the user for.
@@ -773,7 +830,7 @@ export function createTerminalBridge(options: CreateTerminalOptions): TerminalBr
     toTerminal: (bytes) => output.write(bytes),
     // The progress bar is our text, in UTF-8, and must not go through the remote's
     // decoder: a GBK host would turn its `█` into mojibake.
-    toTerminalText: (text) => term.write(text),
+    toTerminalText: (text) => writeTerm(text),
     toServer: (bytes) => options.onSend(bytes),
     chooseDownloadTarget,
     chooseUploads,
@@ -1061,7 +1118,7 @@ export function createTerminalBridge(options: CreateTerminalOptions): TerminalBr
     write(bytes: Uint8Array) {
       // Server bytes are arriving in this pane, so it is the one trzsz's
       // stdout belongs to.
-      bindTrzszStdout(options.id, (text) => term.write(text));
+      bindTrzszStdout(options.id, (text) => writeTerm(text));
       noteOutput(bytes);
       zmodem.consume(bytes);
     },
@@ -1084,6 +1141,20 @@ export function createTerminalBridge(options: CreateTerminalOptions): TerminalBr
 
     focus() {
       term.focus();
+    },
+
+    queuedBytes() {
+      return queuedChars;
+    },
+
+    setScrollback(lines: number) {
+      // xterm trims the buffer on the next write; nothing else to do. Lowering
+      // it is how a user caps a busy tab's retained memory without closing it.
+      term.options.scrollback = clampScrollback(lines);
+    },
+
+    writeText(text: string) {
+      writeTerm(text);
     },
 
     reattachKeyboard() {
@@ -1199,7 +1270,7 @@ export function createTerminalBridge(options: CreateTerminalOptions): TerminalBr
     },
 
     clear() {
-      term.write('\x1b[3J\x1b[H\x1b[2J');
+      writeTerm('\x1b[3J\x1b[H\x1b[2J');
       term.clear();
       highlighter.reset();
     },
@@ -1243,6 +1314,7 @@ export function createTerminalBridge(options: CreateTerminalOptions): TerminalBr
     },
 
     dispose() {
+      disposed = true;
       stopIdleTimer();
       stopMouseHooks?.();
       stopMouseHooks = null;

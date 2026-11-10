@@ -10,7 +10,7 @@ info:
   description: "SSH terminal with trzsz file transfer"
   copyright: "(c) 2026, GoTerm contributors"
   comments: "SSH terminal, xterm.js frontend, trzsz file transfer"
-  version: "1.3.0"
+  version: "1.4.0"
 
 # Dev mode: `wails3 dev` rebuilds the Go side on save and hot-reloads the
 # Vite server (frontend/vite.config.ts pins the port to match).

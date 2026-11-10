@@ -2,7 +2,7 @@
  * Where the keyboard is when the user comes back.
  *
  * The bug this file is about: in a TUI, switching to another tab and back left the
- * IME showing a cross 鈥?Windows' 鈥滃凡绂佺敤杈撳叆娉曗€?鈥?until you clicked into the terminal
+ * IME showing a cross �?Windows' 鈥滃凡绂佺敤杈撳叆娉曗€?�?until you clicked into the terminal
  * again. The cause is not the IME: `v-show` hides the pane the keyboard is in, and
  * a textarea inside a `display: none` subtree cannot be focused, so the keyboard
  * stays pointing into a pane nobody is rendering. Nothing to attach an input method
@@ -24,8 +24,8 @@ import { nextTick } from 'vue';
 
 const transferState = vi.hoisted(() => ({ active: false }));
 
-// happy-dom has no WebGL2, and the addon complains asynchronously 鈥?after the
-// bridge's own try/catch 鈥?which vitest reports as an unhandled error. The renderer
+// happy-dom has no WebGL2, and the addon complains asynchronously �?after the
+// bridge's own try/catch �?which vitest reports as an unhandled error. The renderer
 // is not what this file is about.
 vi.mock('@xterm/addon-webgl', () => ({
   WebglAddon: class {
@@ -102,7 +102,7 @@ function pane(entry: Tab): { wrapper: HTMLDivElement; el: HTMLDivElement } {
   const wrapper = document.createElement('div');
   document.body.appendChild(wrapper);
   const bridge = ensureBridge(entry);
-  // What TerminalPane.vue does on mount 鈥?including xterm's own focus frame.
+  // What TerminalPane.vue does on mount �?including xterm's own focus frame.
   bridge.attach(wrapper);
   return { wrapper, el: bridge.el };
 }
@@ -134,7 +134,7 @@ beforeEach(() => {
 
 describe('focus after a tab switch', () => {
   // `activateTab` used to focus synchronously, while `v-show` had not swapped the
-  // panes yet 鈥?so the focus call landed on a hidden element and did nothing, and
+  // panes yet �?so the focus call landed on a hidden element and did nothing, and
   // the keyboard stayed in the pane that was about to be hidden.
   it('waits for the pane to be on screen before giving it the keyboard', async () => {
     const first = tab('a', 'web-01');
@@ -226,7 +226,7 @@ describe('the keyboard follows the active tab, whoever moved it', () => {
   it('focuses a tab that was activated without activateTab', async () => {
     // Connecting a host, duplicating a tab and reconnecting all assign
     // `state.activeTabId` directly. They used to rely on the pane noticing, and the
-    // pane noticed too early 鈥?see the synchronous-focus test above.
+    // pane noticed too early �?see the synchronous-focus test above.
     const first = tab('a', 'web-01');
     const second = tab('b', 'web-02');
     state.tabs.push(first, second);
@@ -313,7 +313,7 @@ describe('when the keyboard falls nowhere', () => {
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(document.activeElement).toBe(item);
 
-    // Then it is activated, and the menu — with the entry — goes away.
+    // Then it is activated, and the menu �?with the entry �?goes away.
     item.remove();
     reclaimFocusSoon();
 
@@ -379,3 +379,130 @@ describe('coming back to the window', () => {
   });
 });
 
+describe('a tab switch whose focus did not take', () => {
+  /**
+   * The click that moved the tab can end with the keyboard on <body>: the pane
+   * is on screen and the terminal asked for it, but the focus call landed while
+   * the browser was still finishing the click. One frame later the answer is
+   * final, and the terminal asks once more �� which is the difference between
+   * "click the tab and type" and "click the tab, then click the terminal".
+   */
+  it('asks once more on the next frame when the first focus did not take', async () => {
+    const first = freshTab();
+    const second = freshTab();
+    state.tabs.push(first, second);
+    state.activeTabId = first.id;
+
+    const a = pane(first);
+    const b = pane(second);
+    b.wrapper.style.display = 'none';
+    await settle();
+
+    const bridgeB = ensureBridge(second);
+    // The first attempt is refused, the way a focus call during the click's own
+    // default handling can be.
+    const focusB = vi.spyOn(bridgeB, 'focus').mockImplementationOnce(() => undefined);
+    // `attach` focused this terminal when its pane mounted; a tab that is not
+    // showing must not be holding the keyboard while we test the switch.
+    (document.activeElement as HTMLElement | null)?.blur?.();
+    expect(document.activeElement).toBe(document.body);
+
+    activateTab(second.id);
+    a.wrapper.style.display = 'none';
+    b.wrapper.style.display = '';
+    await nextTick();
+
+    expect(focusB).toHaveBeenCalledTimes(1);
+    expect(b.el.contains(document.activeElement as Node)).toBe(false);
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    expect(focusB).toHaveBeenCalledTimes(2);
+    expect(b.el.contains(document.activeElement as Node)).toBe(true);
+  });
+
+  it('leaves a field that took the keyboard alone', async () => {
+    const first = freshTab();
+    const second = freshTab();
+    state.tabs.push(first, second);
+    state.activeTabId = first.id;
+
+    const a = pane(first);
+    const b = pane(second);
+    b.wrapper.style.display = 'none';
+    await settle();
+
+    const focusB = vi.spyOn(ensureBridge(second), 'focus').mockImplementationOnce(() => undefined);
+    (document.activeElement as HTMLElement | null)?.blur?.();
+
+    activateTab(second.id);
+    a.wrapper.style.display = 'none';
+    b.wrapper.style.display = '';
+    await nextTick();
+
+    // A prompt opened by the switch is a real user of the keyboard; taking it
+    // back would be the app deciding it knows better.
+    const field = document.createElement('input');
+    document.body.appendChild(field);
+    field.focus();
+
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    expect(focusB).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(field);
+    expect(b.el.contains(field)).toBe(false);
+  });
+});
+
+describe('a pane that becomes visible after the focus callback', () => {
+  /**
+   * Measured in Chromium: on a tab click, the post-flush callback runs while the
+   * wrapper being switched to still has `display: none` (the swap lands on a
+   * later flush). Focusing there was a no-op �� the `focus()` call itself never
+   * happened on the real pane �� so the keyboard stayed on <body> and typing went
+   * nowhere until the terminal was clicked again.
+   */
+  it('takes the keyboard once the pane is actually on screen', async () => {
+    const first = freshTab();
+    const second = freshTab();
+    state.tabs.push(first, second);
+    state.activeTabId = first.id;
+
+    const a = pane(first);
+    const b = pane(second);
+    b.wrapper.style.display = 'none';
+    await settle();
+
+    const bridgeB = ensureBridge(second);
+    const focusB = vi.spyOn(bridgeB, 'focus');
+
+    // Collect the frame the store schedules instead of racing it: what matters
+    // is that it asks again once the pane has appeared, not how the test
+    // environment times frames.
+    const frames: FrameRequestCallback[] = [];
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {
+      frames.push(callback);
+      return frames.length;
+    });
+    try {
+      activateTab(second.id);
+      // The callback runs now, with the pane still hidden.
+      await nextTick();
+      expect(focusB).not.toHaveBeenCalled();
+      expect(frames).toHaveLength(1);
+
+      // The pane swap lands after it, which is what happens in the real app —
+      // and Chromium drops the keyboard to <body> when the focused pane is
+      // hidden (happy-dom leaves it on the hidden textarea, so say it here).
+      a.wrapper.style.display = 'none';
+      b.wrapper.style.display = '';
+      (document.activeElement as HTMLElement | null)?.blur?.();
+      frames[0]?.(0);
+
+      expect(focusB).toHaveBeenCalledTimes(1);
+      expect(b.el.contains(document.activeElement as Node)).toBe(true);
+    } finally {
+      raf.mockRestore();
+    }
+  });
+});

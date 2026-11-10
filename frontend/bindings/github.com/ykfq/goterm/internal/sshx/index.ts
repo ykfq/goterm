@@ -5,5 +5,6 @@ export type {
     Config,
     HostKeyRecord,
     ProxyConfig,
-    SessionInfo
+    SessionInfo,
+    SessionLogInfo
 } from "./models.js";

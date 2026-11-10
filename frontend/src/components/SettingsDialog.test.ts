@@ -272,7 +272,7 @@ describe('SettingsDialog', () => {
   it('sets the idle keepalive window, and tells Go what it now enforces', async () => {
     // The number is not decoration: Go holds the window, so the dialog has to
     // push it. A value that only lived in localStorage would look right and do
-    // nothing. `bridgeReady` is what marks "there is a Go behind this window" â€”
+    // nothing. `bridgeReady` is what marks "there is a Go behind this window" â€?
     // outside that, pushing is pointless and is skipped on purpose.
     state.bridgeReady = true;
     try {
@@ -411,7 +411,7 @@ describe('section tabs', () => {
     expect(headings.length).toBeGreaterThanOrEqual(7);
     for (const heading of headings) {
       // One shared class rather than a utility string per heading, so the style
-      // cannot drift between them â€” and no `uppercase`, which is what made the
+      // cannot drift between them â€?and no `uppercase`, which is what made the
       // labels read as captions.
       expect(heading.classes()).toContain('settings-section');
       expect(heading.classes().join(' ')).not.toContain('uppercase');
@@ -438,5 +438,35 @@ describe('section tabs', () => {
     expect(wrapper.get('[data-test="settings-tab-behaviour"]').attributes('aria-selected')).toBe('true');
     expect(shown(wrapper, '[data-test="idle-keepalive"]')).toBe(true);
     expect(shown(wrapper, '[data-test="font-family"]')).toBe(false);
+  });
+});
+
+describe('memory and recording', () => {
+  it('changes how much scrollback a terminal keeps', async () => {
+    const wrapper = await mountDialog();
+    const input = wrapper.find('[data-test="scrollback"]');
+    expect(state.settings.scrollbackLines).toBe(4000);
+
+    await input.setValue('1500');
+    expect(state.settings.scrollbackLines).toBe(1500);
+    expect(JSON.parse(localStorage.getItem('goterm.settings') ?? '{}').scrollbackLines).toBe(1500);
+
+    // Below the floor is a terminal that cannot scroll; clamp rather than keep a
+    // number xterm would silently round to something else.
+    await input.setValue('1');
+    expect(state.settings.scrollbackLines).toBe(200);
+  });
+
+  it('turns session recording on and off', async () => {
+    const wrapper = await mountDialog();
+    const box = wrapper.find('[data-test="session-logging"]');
+    expect(state.settings.sessionLogging).toBe(false);
+
+    await box.setValue(true);
+    expect(state.settings.sessionLogging).toBe(true);
+    expect(JSON.parse(localStorage.getItem('goterm.settings') ?? '{}').sessionLogging).toBe(true);
+
+    await box.setValue(false);
+    expect(state.settings.sessionLogging).toBe(false);
   });
 });

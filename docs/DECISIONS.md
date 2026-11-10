@@ -1164,6 +1164,49 @@ WebView2 COM + x/crypto/ssh + syso**。所以“精简 JS”不是主战场。gz
 
 ---
 
+### 12. 输出流控、滚动回看与会话日志（2026-11-10）
+
+**一、切标签后键盘不在终端里（真机复现）。** 上一轮的结论是“post-flush 时窗格已经可见”，但在真实
+Chromium 里把 DOM 打出来看，回调执行那一刻新窗格的 `v-show` 包装**仍是 `display: none`**：
+`[… 'DIV:none', 'SECTION:block', …]`。于是 `isRendered()` 为假、`focus()` 根本没被调用，键盘留在
+`<body>`——Playwright 实测：点标签后 `activeElement` 是 `BODY`，随后键入的字节数为 0。修法：
+`focusTabIfShown()` 同步试一次；没落到窗格里就下一帧（`requestAnimationFrame`）再试一次，那时换窗格
+与点击自身的默认聚焦都已结束。判据用 `isRendered(document.activeElement)`：焦点在“已被隐藏的窗格”里
+也算无主（同一个死状态换了个位置），真正的输入框/按钮接手时不抢。验证：Chromium 里切标签后
+`activeElement` 是 `tab-2` 的 TEXTAREA，`echo via-keyboard` 完整到达会话；`ime-focus.test.ts` 新增
+“窗格晚一帧才可见”的一条（收集 rAF 回调手动触发，不赌时序）。
+
+**二、内存 1G 的来源不是 scrollback。** 实测 xterm 的缓冲区很紧凑：200 列、8000 行 scrollback 只占
+约 3.4 MB，4000 行约 1.7 MB。尖峰在**写队列**：`term.write()` 只入队，解析按 xterm 自己的节奏跑；
+服务端比终端快时差额全在 webview 里。Node 里向 xterm 灌大块输出，超过它自己的上限就直接报
+`write data discarded, use flow control to avoid losing data`——它宁可丢数据也不无限增长。所以刹车在
+**源头**：
+
+- Go 的 `Session` 增加 `SetOutputFlow(paused)`：pump 暂停时不读 chunk 队列 → SSH reader 填满 16 个
+  32 KiB 槽后阻塞 → TCP 窗口关闭。`finish()` 先恢复流控，暂停中的会话关掉不会留下卡住的 goroutine
+  或没关的日志文件。
+- 前端 `OutputFlow`（`frontend/src/lib/output-flow.ts`）做滞回：积压 ≥ 4 MB 暂停，≤ 1 MB 恢复，只在
+  状态变化时发一次 IPC。4 MB 是普通 burst 的几秒，不是让人故意填满的缓冲。
+- 还没有终端的会话（标签刚建、窗格未挂载）暂存超过 2 MB 也先暂停。原来 4 MB 上限到了会**清空暂存**，
+  也就是丢字节；现在上限只是兜底。
+- scrollback 仍做成设置（Appearance → Scrollback，默认 4000，200–50000）：它不解释 1G，但它是稳态
+  内存的主体，多标签时值得让人自己选。
+
+**三、会话日志。** 写在 Go 侧而不是前端：字节本来就在那里，且 `cat` 大文件不必再走一趟 IPC。文件是
+**原始 PTY 流**（含颜色序列），与 `script(1)` 同类；重新编码成纯文本意味着在热路径里解析转义序列，
+而且日志会悄悄不同于屏幕。命名 `goterm-<时间戳>-<user_host_port>.log`，`O_EXCL` 建文件，同一秒的
+第二个会话（Duplicate）拿到 `-2`。开关在 Settings → Behaviour → Session log：打开时对**已开会话**也
+开始录，关闭时立即 flush 并关文件；每个会话开始时一条 notice 说出路径，`SessionInfo.logPath` 也带回。
+写失败只报一次，会话继续。
+
+验证：`internal/sshx/flow_test.go`（暂停期间事件数不增长、恢复后第一行与最后一行都在、暂停中关会话
+不留悬挂）、`internal/sshx/sessionlog_test.go`（文件与终端收到的字节逐字节相等、含 ESC、默认关闭、
+停用即止、每会话一文件、Windows 文件名安全）、`frontend/src/lib/output-flow.test.ts`（滞回与 hold/release
+两种原因不串）、`terminal-backlog.test.ts`（积压计数与回看行数钳制）、`store-settings.test.ts` /
+`SettingsDialog.test.ts`（两个新设置的持久化与控件）。
+
+---
+
 ## C. 已验证明细
 
 ### What is verified, and how
@@ -1227,6 +1270,9 @@ WebView2 COM + x/crypto/ssh + syso**。所以“精简 JS”不是主战场。gz
 | The shell's control keys never get stolen | `frontend/src/lib/shortcuts.test.ts` pins the boundary for `Ctrl+W/K/T/B` (and `Ctrl+C`/`Ctrl+V`): with the terminal focused they are **not** shortcuts, with focus elsewhere they run the app command, and the shifted form always does. `paste-flow.test.ts` → *keyboard ownership* proves that focus inside the pane is what the check sees, and that xterm is told to ignore exactly the combos the app claims |
 | Find searches the buffer, and the keys mean what they say | `frontend/src/components/TerminalPane.test.ts` → *in-tab find*: the bar stays shut until asked, shows only on the active tab, searches as you type, walks forward on Enter and back on Shift+Enter, shows the count the addon reported (`? / n` when the selected match is outside the 1000 the addon lists), re-searches when `Aa` is toggled, drops the highlights when the query is emptied, closes on Esc leaving the terminal focused, and leaves an IME-cancelling Esc alone. `shortcuts.test.ts` keeps `Ctrl+F` with the shell and `Ctrl+Shift+F` with the app. `frontend/src/lib/terminal-search.test.ts` runs the *real* addon against a real terminal buffer — which is the only place that catches the decorations being gated behind `allowProposedApi` — and `store-find.test.ts` pins the bar going away on every path that moves the active tab |
 | A GBK host reads as Chinese, a UTF-8 host reads as bytes | `frontend/src/lib/encoding.test.ts`: UTF-8 returns the *same* `Uint8Array` (identity, not equality — the byte-for-byte guarantees have one path), GBK `D6 D0 CE C4` decodes to 中文, a character split across two chunks survives, an encoding change drops the half-character and an unknown value falls back to UTF-8. `terminal-encoding.test.ts` proves it is actually *wired*: the same cases through a real bridge `paint()`, plus GoTerm's own strings bypassing the decoder |
+| a tab click puts the keyboard in the terminal | `frontend/src/lib/ime-focus.test.ts` (16 cases) — including *the pane becomes visible after the callback*, which encodes the ordering measured in Chromium; the store schedules its retry as a frame, and the test collects that callback instead of racing it. Verified in real Chromium against the dev server: after clicking tab 2, `document.activeElement` is tab 2's `TEXTAREA`, and `echo via-keyboard` reaches the mocked `sendInputB64` |
+| a firehose cannot grow the webview without bound | `internal/sshx/flow_test.go`: pausing stops data events (0 bytes while 200 lines are produced), resuming delivers the first and the last line, and a paused session that is closed still drains and closes its log. `frontend/src/lib/output-flow.test.ts` pins the 4 MB / 1 MB hysteresis, why a hold is not lifted by a drained backlog, and that a vanished session is forgotten without an IPC call. `terminal-backlog.test.ts` proves the bridge counts what xterm has not parsed and drains it |
+| a session log is the terminal's own bytes | `internal/sshx/sessionlog_test.go`: the file equals the concatenated `DataEvent` payloads byte for byte (escape sequences included), nothing is written unless asked, switching off stops at that byte, duplicate sessions get separate files, and a target with `@` / `:` / `[]` produces a Windows-safe name |
 
 Honest gaps: no host running real `trz`/`tsz` binaries was reachable here, so
 wire compatibility is proven against `sshtest -shell trzsz` (a second,

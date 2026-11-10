@@ -91,6 +91,13 @@ type Manager struct {
 	// app never sets — see SetIdleTimeout.
 	idleTimeout atomic.Int64
 
+	// Session logging. logMu also guards the snapshot of the session map that
+	// ConfigureSessionLogging needs, because a change applies to the sessions
+	// that are already open as well as to the next one.
+	logMu      sync.Mutex
+	logEnabled bool
+	logDir     string
+
 	emitter atomic.Pointer[EmitFunc]
 }
 
@@ -368,6 +375,7 @@ func (m *Manager) register(link *connRef, cfg Config, sh *shellPipes, fingerprin
 	}
 	link.track(s)
 	m.remember(s)
+	m.openLogFor(s)
 
 	var wg sync.WaitGroup
 	s.readers(&wg, sh.stdout)
@@ -549,6 +557,18 @@ func (m *Manager) Write(id string, p []byte) error {
 		return ErrClosed
 	}
 	return s.Write(p)
+}
+
+// SetOutputFlow pauses or resumes one session's output. The UI calls this when
+// its terminal falls behind; see Session.SetOutputFlow for why this is the fix
+// rather than a larger buffer somewhere.
+func (m *Manager) SetOutputFlow(id string, paused bool) error {
+	s, ok := m.Get(id)
+	if !ok {
+		return ErrClosed
+	}
+	s.SetOutputFlow(paused)
+	return nil
 }
 
 // Resize forwards a window size change.

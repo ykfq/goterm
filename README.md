@@ -39,6 +39,14 @@ Hand the repository to any AI coding assistant with one line:
 - Copy on select (mouse-release only), and a full-screen program's own *Copy* works too — relayed through OSC 52. Multi-line paste confirmation with an editable box.
 - Remote text encoding: UTF-8 (default) or GB18030 / GBK / GB2312 / Big5 / Shift_JIS, streamed so a
   multi-byte character split across a 64 KiB chunk is still decoded correctly.
+- Switching tabs puts the keyboard in the terminal: click a tab and type, no second click. The pane's
+  `v-show` swap lands after the focus callback, so the focus is re-asserted one frame later if nothing
+  real took the keyboard.
+- Bounded memory under a firehose: when a tab's terminal falls behind parsing, GoTerm asks Go to stop
+  reading that session (TCP's own window does the rest) instead of letting the difference grow in the
+  webview. Scrollback is configurable (Appearance → Scrollback, default 4 000 lines).
+- Optional **session log**: one file per session, written by Go, byte-for-byte what the terminal
+  received (colour sequences included — what `script(1)` records). Settings → Behaviour → Session log.
 
 **Transfers**
 - Native `trz`/`tsz` with the real trzsz progress bar; drag files onto the terminal to upload.
@@ -85,7 +93,7 @@ sidebar — `Ctrl+Shift+B` brings it back at the width it had).
 
 ## Install
 
-Download `goterm-v1.3.0-windows-x64.exe` (and the matching `.md5` / `.sha256`) from the repository's
+Download `goterm-v1.4.0-windows-x64.exe` (and the matching `.md5` / `.sha256`) from the repository's
 [**Releases**](https://github.com/ykfq/goterm/releases) page. The binaries there are built by GitHub
 Actions from the tag ([`.github/workflows/release.yml`](.github/workflows/release.yml)), never
 committed to the repository.
@@ -190,8 +198,8 @@ has read. One line (with or without its newline) goes straight through.
 
 | Section | What it does |
 | --- | --- |
-| Appearance | Terminal font (monospace only, enumerated from the system), **Block and box characters**, **Remote text encoding**, terminal background (six presets or any colour) |
-| Behaviour | Word separator (with a live preview of what double-click will select), copy on select, **Idle sessions** (anti-idle + which nudge), **Idle keepalive** (stop after 1–744 h without input), **Storage** (where the files live) |
+| Appearance | Terminal font (monospace only, enumerated from the system), **Scrollback** (lines kept per tab), **Block and box characters**, **Remote text encoding**, terminal background (six presets or any colour) |
+| Behaviour | Word separator (with a live preview of what double-click will select), copy on select, **Session log**, **Idle sessions** (anti-idle + which nudge), **Idle keepalive** (stop after 1–744 h without input), **Storage** (where the files live) |
 | Highlighting | Six built-in keyword sets (shell, bash scripts, nginx logs, nginx config, messages, data shapes), custom keywords/regex with a colour, `.msyn` import |
 
 The light/dark theme is the sun/moon icon in the status bar; `Ctrl+=` / `Ctrl+-` / `Ctrl+0` change the
@@ -220,6 +228,7 @@ The folder Settings → Storage shows (default `%USERPROFILE%\AppData\Roaming\go
 | `hosts.json` | saved servers, no secrets |
 | `known_hosts.json` | pinned fingerprints |
 | `prefs.json` | the storage-folder pointer, always in the default folder |
+| `logs/` | session logs, when Settings → Behaviour → Session log is on |
 | `secrets.enc` + `master.key` | only when the sealed-file backend is in use |
 
 Credential-Manager secrets are generic credentials named `goterm/host/<id>/secret`.

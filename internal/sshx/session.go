@@ -50,6 +50,9 @@ type SessionInfo struct {
 	Via string `json:"via,omitempty"`
 	// KeepAliveSeconds is the resolved SSH keepalive interval; 0 means off.
 	KeepAliveSeconds int `json:"keepAliveSeconds,omitempty"`
+	// LogPath is the file this session's output is being recorded to, empty
+	// when logging is off.
+	LogPath string `json:"logPath,omitempty"`
 }
 
 const (
@@ -84,6 +87,19 @@ type Session struct {
 	infoMu sync.Mutex
 	info   SessionInfo
 
+	// Output flow control: the frontend pauses the pump when its terminal is
+	// behind, which is what keeps a firehose (`cat` of a huge file) from
+	// piling up in the webview's IPC queue. flowWake is closed on resume; a
+	// new one is made on the next pause.
+	flowMu     sync.Mutex
+	flowPaused bool
+	flowWake   chan struct{}
+
+	// logMu guards the session log pointer. The pump is the only writer; this
+	// lock covers the user switching recording off while output arrives.
+	logMu sync.Mutex
+	log   *sessionLog
+
 	finishOnce sync.Once
 }
 
@@ -113,6 +129,39 @@ func (s *Session) closed() bool {
 	s.infoMu.Lock()
 	defer s.infoMu.Unlock()
 	return s.info.Status == StatusClosed
+}
+
+// SetOutputFlow pauses or resumes delivering this session's output to the UI.
+//
+// Pausing does not drop anything: the pump stops reading its chunk queue, the
+// SSH readers fill it and then block, and the transport's own window closes.
+// That backpressure is the point — without it a fast server can outrun the
+// terminal and the difference queues up in WebView2's memory.
+func (s *Session) SetOutputFlow(paused bool) {
+	s.flowMu.Lock()
+	defer s.flowMu.Unlock()
+	if s.flowPaused == paused {
+		return
+	}
+	s.flowPaused = paused
+	if paused {
+		s.flowWake = make(chan struct{})
+		return
+	}
+	if s.flowWake != nil {
+		close(s.flowWake)
+		s.flowWake = nil
+	}
+}
+
+// flowGate returns a channel to wait on while paused, nil while running.
+func (s *Session) flowGate() <-chan struct{} {
+	s.flowMu.Lock()
+	defer s.flowMu.Unlock()
+	if !s.flowPaused {
+		return nil
+	}
+	return s.flowWake
 }
 
 // Write sends raw bytes to the remote PTY (input path for xterm and trzsz).
@@ -163,6 +212,9 @@ func (s *Session) Close() error {
 func (s *Session) finish(reason string) {
 	s.finishOnce.Do(func() {
 		s.setStatus(StatusClosed, reason)
+		// A paused pump must not be left waiting on a session that is gone:
+		// resume it so it drains the last chunks and closes the log file.
+		s.SetOutputFlow(false)
 		if s.link != nil {
 			// The connection belongs to whoever is still using it; this session is
 			// simply no longer one of them.
@@ -231,21 +283,47 @@ func (s *Session) noteShellTimeout(chunk []byte) {
 }
 
 // pump owns the output buffer — one goroutine, so events cannot be
-// reordered — and converts byte runs into base64 events.
+// reordered — and converts byte runs into base64 events. It is also where the
+// session log is fed, so the file and the screen see the same bytes in the same
+// order.
 func (s *Session) pump() {
 	ticker := time.NewTicker(flushInterval)
 	defer ticker.Stop()
+	// The last bytes are flushed to disk when the pump exits, which is after
+	// both readers are done: a connection that dies mid-line still leaves a
+	// complete log up to the last byte that arrived.
+	defer s.closeLog()
 
 	var buf []byte
 	flush := func() {
 		if len(buf) == 0 {
+			s.currentLog().flush()
 			return
 		}
+		s.currentLog().write(buf)
+		s.currentLog().flush()
 		s.mgr.emit(EventData, DataEvent{SessionID: s.id, Data: base64.StdEncoding.EncodeToString(buf)})
 		buf = nil
 	}
 
+	// A pause that arrives after finish() has already resumed the gate must not
+	// leave this goroutine waiting on a session that is gone: its end is the
+	// other way out. Once the session has ended the pause is ignored and the
+	// queue is drained, so the log still gets its last bytes.
+	flowDisabled := false
 	for {
+		// Paused by the UI: hand over what is already buffered, then wait.
+		if !flowDisabled {
+			if gate := s.flowGate(); gate != nil {
+				flush()
+				select {
+				case <-gate:
+				case <-s.seqDone:
+					flowDisabled = true
+				}
+				continue
+			}
+		}
 		select {
 		case chunk, ok := <-s.chunks:
 			if !ok {
@@ -254,6 +332,7 @@ func (s *Session) pump() {
 			}
 			buf = append(buf, chunk...)
 			for len(buf) >= maxChunk {
+				s.currentLog().write(buf[:maxChunk])
 				s.mgr.emit(EventData, DataEvent{SessionID: s.id, Data: base64.StdEncoding.EncodeToString(buf[:maxChunk])})
 				buf = buf[maxChunk:]
 			}

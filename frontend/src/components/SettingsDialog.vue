@@ -33,11 +33,13 @@ import {
   setIdleNudge,
   setCopyOnSelect,
   setContinuousGlyphs,
+  setScrollbackLines,
+  setSessionLogging,
   setTerminalEncoding,
   setWordSeparator,
   state,
 } from '../lib/store';
-import { DEFAULT_WORD_SEPARATOR, fontStack, paneTheme, type IdleNudge } from '../lib/terminal';
+import { DEFAULT_WORD_SEPARATOR, SCROLLBACK_MAX, SCROLLBACK_MIN, fontStack, paneTheme, type IdleNudge } from '../lib/terminal';
 import type { StorageInfo } from '../lib/protocol';
 
 const emit = defineEmits<{ (event: 'close'): void }>();
@@ -271,6 +273,26 @@ function toggleContinuousGlyphs(event: Event): void {
   setContinuousGlyphs((event.target as HTMLInputElement).checked);
 }
 
+// --- scrollback -------------------------------------------------------------
+//
+// The terminal's long-term memory, and the bulk of a tab's retained bytes. The
+// bounds live in terminal.ts next to the xterm option they clamp.
+
+function pickScrollback(event: Event): void {
+  const lines = Number.parseInt((event.target as HTMLInputElement).value, 10);
+  setScrollbackLines(Number.isFinite(lines) ? lines : state.settings.scrollbackLines);
+}
+
+// --- session log ------------------------------------------------------------
+//
+// Go writes the file; this switch only says whether it should. The path is shown
+// from the backend's answer because it follows the storage folder, which the
+// settings screen does not own either.
+
+function toggleSessionLogging(event: Event): void {
+  setSessionLogging((event.target as HTMLInputElement).checked);
+}
+
 // --- idle keepalive window ---------------------------------------------------
 //
 // How long a session may sit without typed input before Go stops sending
@@ -492,6 +514,29 @@ async function importMsyn(): Promise<void> {
           </div>
         </section>
 
+        <!-- Scrollback -->
+        <section v-show="tab === 'appearance'" class="mb-6">
+          <h3 class="settings-section">Scrollback</h3>
+          <p class="mb-2 text-[11px] leading-snug text-[var(--text-dim)]">
+            Lines each terminal keeps above the screen. This is most of a tab's memory: every line is stored at the
+            pane's full width, so a wide pane at eight thousand lines costs several megabytes per tab. Lower it when many
+            tabs are open; raise it to scroll back through long logs.
+          </p>
+          <label class="flex items-center gap-2 text-[12px] text-[var(--text)]">
+            <input
+              type="number"
+              data-test="scrollback"
+              :min="SCROLLBACK_MIN"
+              :max="SCROLLBACK_MAX"
+              step="100"
+              :value="state.settings.scrollbackLines"
+              class="focus-ring w-28 rounded border border-[var(--border)] bg-[var(--bg)] px-2 py-1.5 text-[13px] text-[var(--text)]"
+              @change="pickScrollback"
+            />
+            lines · {{ SCROLLBACK_MIN }}–{{ SCROLLBACK_MAX }}
+          </label>
+        </section>
+
         <!-- Block and box characters -->
         <section v-show="tab === 'appearance'" class="mb-6">
           <h3 class="settings-section">Block and box characters</h3>
@@ -706,6 +751,27 @@ async function importMsyn(): Promise<void> {
           <p class="mt-1 text-[11px] leading-snug text-[var(--text-dim)]">
             Any keystroke restarts the countdown, and a session you are using is never cut off. Once the window is
             reached the tab stays open; whether the connection actually drops is up to the server and its network.
+          </p>
+        </section>
+
+        <!-- Session log -->
+        <section v-show="tab === 'behaviour'" class="mb-6">
+          <h3 class="settings-section">Session log</h3>
+          <label class="flex items-center gap-2 text-[12px] text-[var(--text)]">
+            <input
+              type="checkbox"
+              data-test="session-logging"
+              class="focus-ring accent-[var(--accent-ink)]"
+              :checked="state.settings.sessionLogging"
+              @change="toggleSessionLogging"
+            />
+            Record each session's output to a file
+          </label>
+          <p class="mt-1 text-[11px] leading-snug text-[var(--text-dim)]">
+            One file per session, written by Go as the bytes arrive: exactly what the terminal received, colour sequences
+            included — the same thing <code class="text-[var(--text)]">script(1)</code> records. Files go to
+            <code class="font-mono break-all">{{ state.sessionLog.dir || 'the storage folder' }}</code
+            >, and the switch applies to sessions that are already open.
           </p>
         </section>
 

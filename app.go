@@ -28,7 +28,7 @@ import (
 )
 
 // Version is stamped by the build; the UI shows it in the status bar.
-const Version = "1.3.0"
+const Version = "1.4.0"
 
 // App is the object bound to the frontend. Every exported method here is
 // callable from TypeScript, so keep signatures additive.
@@ -232,6 +232,30 @@ func (a *App) SendInputB64(sessionID, dataB64 string) error {
 // ResizePTY tells the remote PTY the terminal's new size.
 func (a *App) ResizePTY(sessionID string, cols, rows int) error {
 	return a.mgr.Resize(sessionID, cols, rows)
+}
+
+// SetOutputFlow pauses or resumes a session's output for the UI's flow control.
+// The terminal asks for a pause when it is behind and for a resume when it has
+// caught up; pausing blocks the SSH reader instead of growing a queue in the
+// webview, which is what kept a firehose of output from costing a gigabyte of
+// memory.
+func (a *App) SetOutputFlow(sessionID string, paused bool) error {
+	return a.mgr.SetOutputFlow(sessionID, paused)
+}
+
+// SetSessionLogging turns recording of session output on or off, and reports
+// where the files go. It applies to sessions that are already open, so the
+// switch means what it says.
+//
+// The directory is resolved here rather than in internal/sshx: where state
+// lives is an application decision (the same folder hosts.json and the key
+// ring use), and the SSH package has no business knowing about it.
+func (a *App) SetSessionLogging(enabled bool) (sshx.SessionLogInfo, error) {
+	dir, err := appdir.Path("logs")
+	if err != nil {
+		return sshx.SessionLogInfo{}, err
+	}
+	return a.mgr.ConfigureSessionLogging(enabled, dir)
 }
 
 // CloseSession ends one session.

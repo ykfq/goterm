@@ -294,6 +294,30 @@ export function SetIdleTimeout(hours: number): $CancellablePromise<number> {
 }
 
 /**
+ * SetOutputFlow pauses or resumes a session's output for the UI's flow control.
+ * The terminal asks for a pause when it is behind and for a resume when it has
+ * caught up; pausing blocks the SSH reader instead of growing a queue in the
+ * webview, which is what kept a firehose of output from costing a gigabyte of
+ * memory.
+ */
+export function SetOutputFlow(sessionID: string, paused: boolean): $CancellablePromise<void> {
+    return $Call.ByID(2990004978, sessionID, paused);
+}
+
+/**
+ * SetSessionLogging turns recording of session output on or off, and reports
+ * where the files go. It applies to sessions that are already open, so the
+ * switch means what it says.
+ * 
+ * The directory is resolved here rather than in internal/sshx: where state
+ * lives is an application decision (the same folder hosts.json and the key
+ * ring use), and the SSH package has no business knowing about it.
+ */
+export function SetSessionLogging(enabled: boolean): $CancellablePromise<sshx$0.SessionLogInfo> {
+    return $Call.ByID(619238686, enabled);
+}
+
+/**
  * SetStorageDir remembers where the next start should keep state. An empty
  * string returns to the default folder. It writes nothing when GOTERM_DIR is
  * set, because that variable wins and the setting would silently do nothing.

@@ -18,9 +18,10 @@ import type { CustomRule } from './highlight';
 import type { IdleNudge, TerminalBridge, ThemeName } from './terminal';
 import { installFilePickers, pickerMode, type PickerMode } from './fsaccess';
 import { isMultilinePaste, lineCount, trimLeadingNewlines, trimTrailingBlankLines } from './paste';
-import { DEFAULT_WORD_SEPARATOR, createTerminalBridge, panePalette } from './terminal';
+import { DEFAULT_WORD_SEPARATOR, SCROLLBACK_DEFAULT, clampScrollback, createTerminalBridge, panePalette } from './terminal';
 import { isTerminalEncoding } from './encoding';
 import type { TerminalEncoding } from './encoding';
+import { OutputFlow } from './output-flow';
 import { isRendered } from './rendered';
 
 export type TabStatus = 'connecting' | 'open' | 'closed' | 'error';
@@ -119,6 +120,20 @@ interface Settings {
    */
   idleTimeoutHours: number;
   /**
+   * Lines of scrollback each terminal keeps.
+   *
+   * This is most of a tab's retained memory: xterm stores every scrollback line
+   * at the pane's full width. The default is below xterm's own 8000 so a row of
+   * wide tabs does not cost tens of megabytes each, and the setting lets someone
+   * who wants a long history choose it deliberately.
+   */
+  scrollbackLines: number;
+  /**
+   * Record every session's output to a file under the state directory's `logs`
+   * folder. Go owns the writing: the bytes are already there, byte-exact.
+   */
+  sessionLogging: boolean;
+  /**
    * Put a finished mouse selection straight on the clipboard. Off means only
    * Ctrl+Shift+C copies.
    */
@@ -179,6 +194,8 @@ function defaultSettings(): Settings {
     idleKeepAliveMinutes: 0,
     idleNudge: 'space',
     idleTimeoutHours: 24,
+    scrollbackLines: SCROLLBACK_DEFAULT,
+    sessionLogging: false,
     copyOnSelect: true,
     continuousGlyphs: false,
     sidebarWidth: SIDEBAR_WIDTH_DEFAULT,
@@ -247,6 +264,32 @@ const bridges = new Map<string, TerminalBridge>();
 /** Output that arrived before its tab had a terminal to write into. */
 const pendingOutput = new Map<string, Uint8Array[]>();
 const PENDING_LIMIT = 4 * 1024 * 1024;
+/**
+ * How much staged output (bytes waiting for a terminal to exist) is enough to
+ * ask the server to wait. Well below PENDING_LIMIT, so the cap is a backstop and
+ * not the mechanism: reaching it used to mean discarding everything staged.
+ */
+const PENDING_PAUSE = 2 * 1024 * 1024;
+
+// --- output flow control ----------------------------------------------------
+//
+// xterm's write queue is memory, and it is not infinite: past its own limit it
+// discards data (with a console error) rather than growing without bound. A
+// server that can send faster than the terminal parses (`cat` of a big file, a
+// verbose build) therefore cannot be managed from this side — the only place to
+// slow down is the source. Go pauses a session's output pump when asked, which
+// stops reading the SSH stream and lets TCP's window do the rest.
+//
+// The hysteresis rule lives in `output-flow.ts`, where it is tested on its own;
+// this wiring only says where the number comes from and how it reaches Go.
+const outputFlow = new OutputFlow(undefined, undefined, (sessionId, paused) => {
+  if (!state.bridgeReady) return;
+  void backend.setOutputFlow(sessionId, paused).catch(() => {
+    // A refused call means the session is gone. Forget it rather than keeping a
+    // stale "paused" that would suppress the next resume forever.
+    outputFlow.forget(sessionId);
+  });
+});
 
 function loadSettings(): Settings {
   const fallback = defaultSettings();
@@ -291,6 +334,12 @@ function loadSettings(): Settings {
       idleTimeoutHours: clampIdleTimeoutHours(
         parsed.idleTimeoutHours ?? (parsed as { sessionHours?: unknown }).sessionHours,
       ),
+      scrollbackLines:
+        typeof parsed.scrollbackLines === 'number'
+          ? clampScrollback(parsed.scrollbackLines)
+          : fallback.scrollbackLines,
+      sessionLogging:
+        typeof parsed.sessionLogging === 'boolean' ? parsed.sessionLogging : fallback.sessionLogging,
       copyOnSelect: typeof parsed.copyOnSelect === 'boolean' ? parsed.copyOnSelect : fallback.copyOnSelect,
     continuousGlyphs:
       typeof parsed.continuousGlyphs === 'boolean' ? parsed.continuousGlyphs : fallback.continuousGlyphs,
@@ -316,6 +365,8 @@ export const state = reactive({
   filePickerMode: 'none' as PickerMode,
   settings: saved,
   sftp: emptySftp(),
+  /** Where Go writes session logs, as the backend resolved it. */
+  sessionLog: { enabled: false, dir: '' },
 });
 
 let noticeSeq = 0;
@@ -505,6 +556,57 @@ export function setIdleTimeoutHours(hours: number): void {
 }
 
 /**
+ * Lines of scrollback each terminal keeps. Applied to open tabs as well as to
+ * the ones opened later: lowering it is a deliberate memory decision, and it
+ * should take effect on the tab that is using the memory.
+ */
+export function setScrollbackLines(lines: number): void {
+  const value = clampScrollback(lines);
+  state.settings.scrollbackLines = value;
+  saveSettings();
+  for (const bridge of bridges.values()) bridge.setScrollback(value);
+}
+
+/**
+ * Push the session-log switch to Go, which owns the file and its directory.
+ *
+ * The path lives on the backend side because where state lives is Go's answer
+ * (Settings → Storage can move it), and the file has to be written where the
+ * rest of the state is — not wherever the webview happens to think that is.
+ */
+function pushSessionLogging(announce = true): void {
+  if (!state.bridgeReady) return;
+  const wanted = state.settings.sessionLogging;
+  void backend
+    .setSessionLogging(wanted)
+    .then((info) => {
+      state.sessionLog = info;
+      // Not on startup: a toast about a setting nobody just touched is noise.
+      // The settings screen and the per-session notice say it when it matters.
+      if (!announce) return;
+      if (wanted) {
+        pushNotice('info', `Session logging is on: files go to ${info.dir}`);
+      } else {
+        pushNotice('info', 'Session logging is off.');
+      }
+    })
+    .catch((error: unknown) => {
+      state.sessionLog = { enabled: false, dir: state.sessionLog.dir };
+      pushNotice('warn', `Session logging could not be changed: ${errorMessage(error)}`);
+    });
+}
+
+/**
+ * Record every session's output to a file. Applies to sessions that are already
+ * open, so the switch does what it says rather than taking effect next time.
+ */
+export function setSessionLogging(on: boolean): void {
+  state.settings.sessionLogging = on;
+  saveSettings();
+  pushSessionLogging();
+}
+
+/**
  * Choose what the anti-idle sends: space+backspace (default) or an empty line.
  *
  * The space pair is the safe one — it cannot submit or run anything, and it is
@@ -570,6 +672,8 @@ export function resetSettings(): void {
   setCopyOnSelect(defaults.copyOnSelect);
   setContinuousGlyphs(defaults.continuousGlyphs);
   setSidebarWidth(defaults.sidebarWidth);
+  setScrollbackLines(defaults.scrollbackLines);
+  setSessionLogging(defaults.sessionLogging);
 }
 
 // --- notices ---------------------------------------------------------------
@@ -790,8 +894,10 @@ export async function bootstrap(): Promise<boolean> {
     applyWindowTheme();
     // Settings Go enforces rather than renders are pushed once the bridge is known
     // to exist: the idle window has to be in force before the first connection,
-    // or the default would only apply until the user opens Settings.
+    // or the default would only apply until the user opens Settings. Session
+    // logging is the same: the first tab of the session must be covered.
     pushIdleTimeout();
+    pushSessionLogging(false);
   }
   installFilePickers(state.bridgeReady ? fileBridgeApi() : null);
   state.filePickerMode = pickerMode();
@@ -817,6 +923,7 @@ export async function bootstrap(): Promise<boolean> {
   onClosedEvent((event) => {
     const tab = state.tabs.find((candidate) => candidate.sessionId === event.sessionId);
     pendingOutput.delete(event.sessionId);
+    outputFlow.forget(event.sessionId);
     if (!tab) return;
     // No toast. The tab goes grey and the reason is written into the pane right
     // where the session was — a popup for something the user can already see (and
@@ -852,6 +959,10 @@ function stageOutput(sessionId: string, bytes: Uint8Array): void {
     pendingOutput.set(sessionId, []);
     return;
   }
+  // No terminal to draw into yet: ask the server to wait instead of piling the
+  // session's output up in the webview. The cap above is then only a backstop
+  // for a server that ignores flow control.
+  if (total > PENDING_PAUSE) outputFlow.hold(sessionId);
   if (existing) existing.push(bytes);
   else pendingOutput.set(sessionId, [bytes]);
 }
@@ -859,8 +970,14 @@ function stageOutput(sessionId: string, bytes: Uint8Array): void {
 function drainOutput(tab: Tab, bridge: TerminalBridge): void {
   if (!tab.sessionId) return;
   const queued = pendingOutput.get(tab.sessionId);
-  if (!queued?.length) return;
   pendingOutput.delete(tab.sessionId);
+  // The server was asked to wait while this output had no terminal; it has one
+  // now. Release even when nothing was staged: the hold may have been taken
+  // before the cap cleared the queue, and leaving it set would silence the
+  // session for good. Writing may raise the backlog again, which pauses it after
+  // the burst.
+  outputFlow.release(tab.sessionId);
+  if (!queued?.length) return;
   for (const chunk of queued) bridge.write(chunk);
 }
 
@@ -938,6 +1055,10 @@ export function ensureBridge(tab: Tab): TerminalBridge {
     idleNudge: state.settings.idleNudge,
     copyOnSelect: state.settings.copyOnSelect,
     continuousGlyphs: state.settings.continuousGlyphs,
+    scrollback: state.settings.scrollbackLines,
+    onBacklog: (queuedChars) => {
+      if (tab.sessionId && acceptsInput(tab)) outputFlow.track(tab.sessionId, queuedChars);
+    },
     theme: state.settings.theme,
     onSend: (bytes) => {
       // Nothing can be sent to a session that has ended, and saying so on every
@@ -1123,7 +1244,30 @@ export function activateTab(tabId: string): void {
  */
 export function focusTabIfShown(tabId: string): void {
   const bridge = bridges.get(tabId);
-  if (bridge && isRendered(bridge.el)) bridge.focus();
+  if (!bridge) return;
+  if (isRendered(bridge.el)) {
+    bridge.focus();
+    if (bridge.el.contains(document.activeElement)) return;
+  }
+  // The post-flush callback is not late enough on a real tab switch: at that
+  // moment the pane being switched to is still `display: none` (measured in
+  // Chromium: the wrapper only becomes visible on a later flush), so focusing it
+  // here is the same no-op that leaves the keyboard in a pane nobody renders.
+  // The click that moved the tab can also land its own focus on <body>
+  // afterwards. One frame later both are settled: if the pane is on screen and
+  // nothing real took the keyboard, the terminal gets it. A dialog field that
+  // did take it is left alone.
+  requestAnimationFrame(() => {
+    if (state.activeTabId !== tabId) return;
+    const current = bridges.get(tabId);
+    if (!current || !isRendered(current.el)) return;
+    const active = document.activeElement;
+    // A real control that took the keyboard keeps it. A terminal inside a pane
+    // that is now hidden does not count: that is the same dead state this is
+    // fixing, just one pane over.
+    if (active && active !== document.body && isRendered(active)) return;
+    current.focus();
+  });
 }
 
 /**
@@ -1223,7 +1367,7 @@ export function markSessionGone(tab: Tab, message: string): void {
   if (state.sftp.open && state.sftp.tabId === tab.id) closeSftp();
   const bridge = bridges.get(tab.id);
   bridge?.setIdleKeepAlive(0);
-  bridge?.term.write(`\r\n\x1b[2m[goterm] ${message}\x1b[0m\r\n`);
+  bridge?.writeText(`\r\n\x1b[2m[goterm] ${message}\x1b[0m\r\n`);
 }
 
 /**
@@ -1248,6 +1392,7 @@ export function closeTab(tabId: string): void {
   if (tab?.sessionId) {
     backend.closeSession(tab.sessionId).catch(() => undefined);
     pendingOutput.delete(tab.sessionId);
+    outputFlow.forget(tab.sessionId);
   }
   releaseBridge(tabId);
   if (state.activeTabId === tabId) {

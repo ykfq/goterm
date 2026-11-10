@@ -56,7 +56,7 @@ describe('settings on disk', () => {
       JSON.stringify({ settingsVersion: 2, theme: 'dark', highlight: ['shell'], wordSeparator: ' ' }),
     );
     const store = await freshStore();
-    // `data` stays off â€” that is what the user chose. The config set arrives
+    // `data` stays off â€?that is what the user chose. The config set arrives
     // because this file predates it, which is the other half of the rule.
     expect(store.state.settings.highlight).toEqual(['shell', 'nginx-conf']);
   });
@@ -185,7 +185,7 @@ describe('settings on disk', () => {
     store.enableAntiIdle(5);
     expect(store.state.notices.at(-1)?.message).toMatch(/an empty line every 5 min/);
 
-    // And the bare space says so too â€” it is the one that leaves a character.
+    // And the bare space says so too â€?it is the one that leaves a character.
     store.setIdleNudge('space-only');
     store.enableAntiIdle(4);
     const bare = store.state.notices.at(-1)?.message ?? '';
@@ -226,7 +226,7 @@ describe('block and box glyphs', () => {
 });
 
 describe('idle keepalive window', () => {
-  it('starts at 24 hours â€” never at "no window"', async () => {
+  it('starts at 24 hours â€?never at "no window"', async () => {
     const store = await freshStore();
     expect(store.state.settings.idleTimeoutHours).toBe(24);
   });
@@ -288,7 +288,7 @@ describe('idle keepalive window', () => {
     localStorage.setItem(KEY, JSON.stringify({ settingsVersion: 3, sidebarWidth: 99999 }));
     expect((await freshStore()).state.settings.sidebarWidth).toBe(cap);
 
-    // Narrow is the user's business â€” 0 is a legal (if silly) drag.
+    // Narrow is the user's business â€?0 is a legal (if silly) drag.
     localStorage.setItem(KEY, JSON.stringify({ settingsVersion: 3, sidebarWidth: -10 }));
     expect((await freshStore()).state.settings.sidebarWidth).toBe(0);
 
@@ -305,5 +305,43 @@ describe('idle keepalive window', () => {
 
     store.setSidebarWidth(400);
     expect(localStorage.getItem(KEY)).toContain('"sidebarWidth":400');
+  });
+});
+
+describe('memory and recording settings', () => {
+  it('keeps the scrollback inside the bounds the terminal can honour', async () => {
+    const store = await freshStore();
+    expect(store.state.settings.scrollbackLines).toBe(4000);
+
+    store.setScrollbackLines(1500);
+    expect(store.state.settings.scrollbackLines).toBe(1500);
+    const stored = JSON.parse(localStorage.getItem(KEY) ?? '{}') as { scrollbackLines?: number };
+    expect(stored.scrollbackLines).toBe(1500);
+
+    // Too small is a terminal that cannot scroll back; too large is memory the
+    // user did not ask for. Both are clamped rather than refused.
+    localStorage.setItem(KEY, JSON.stringify({ settingsVersion: 4, scrollbackLines: 5 }));
+    expect((await freshStore()).state.settings.scrollbackLines).toBe(200);
+
+    localStorage.setItem(KEY, JSON.stringify({ settingsVersion: 4, scrollbackLines: 9e9 }));
+    expect((await freshStore()).state.settings.scrollbackLines).toBe(50000);
+
+    // A file written before the option existed gets the default, not NaN.
+    localStorage.setItem(KEY, JSON.stringify({ settingsVersion: 4 }));
+    expect((await freshStore()).state.settings.scrollbackLines).toBe(4000);
+  });
+
+  it('records nothing unless asked, and remembers being asked', async () => {
+    const off = await freshStore();
+    expect(off.state.settings.sessionLogging).toBe(false);
+
+    // Pushed to Go only once the bridge is known to exist; here the store runs
+    // without a backend, which is the same path a plain browser takes.
+    off.setSessionLogging(true);
+    expect(off.state.settings.sessionLogging).toBe(true);
+    const stored = JSON.parse(localStorage.getItem(KEY) ?? '{}') as { sessionLogging?: boolean };
+    expect(stored.sessionLogging).toBe(true);
+
+    expect((await freshStore()).state.settings.sessionLogging).toBe(true);
   });
 });

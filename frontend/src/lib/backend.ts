@@ -9,7 +9,7 @@
 import * as App from '../../bindings/github.com/ykfq/goterm/app';
 import * as Files from '../../bindings/github.com/ykfq/goterm/filebridge';
 import type { FileBridgeApi, FileEntry } from './fsaccess';
-import type { AppInfo, Host, HostExport, HostImport, HostKeyRecord, SessionInfo, SFTPListing, SSHConfig, StorageInfo } from './protocol';
+import type { AppInfo, Host, HostExport, HostImport, HostKeyRecord, SessionInfo, SessionLogInfo, SFTPListing, SSHConfig, StorageInfo } from './protocol';
 
 export function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -65,6 +65,16 @@ export const backend = {
       })),
 
   sendInputB64: (sessionId: string, dataB64: string) => call('sendInput', () => App.SendInputB64(sessionId, dataB64)),
+  /**
+   * Pause or resume a session's output. The terminal asks for a pause when its
+   * parse queue is behind (a firehose of output), which stops the SSH reader and
+   * lets TCP's window do the throttling instead of the webview's memory.
+   */
+  setOutputFlow: (sessionId: string, paused: boolean) =>
+    call('setOutputFlow', () => App.SetOutputFlow(sessionId, paused)),
+  /** Record every session's output to a file; returns where the files go. */
+  setSessionLogging: (enabled: boolean) =>
+    call('setSessionLogging', () => App.SetSessionLogging(enabled) as Promise<SessionLogInfo>),
   /** Idle window in hours: after this long without typed input, Go stops sending keepalives. */
   setIdleTimeout: (hours: number) => call('setIdleTimeout', () => App.SetIdleTimeout(hours)),
   resizePTY: (sessionId: string, cols: number, rows: number) => call('resize', () => App.ResizePTY(sessionId, cols, rows)),

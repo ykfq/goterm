@@ -34,6 +34,14 @@ export interface SessionInfo {
   via?: string;
   /** SSH keepalive interval in seconds; 0 or absent means keepalives are off. */
   keepAliveSeconds?: number;
+  /** File this session's output is being recorded to, absent when off. */
+  logPath?: string;
+}
+
+/** Where session logs are written, as Go resolved it. */
+export interface SessionLogInfo {
+  enabled: boolean;
+  dir: string;
 }
 
 export interface ClosedEvent {

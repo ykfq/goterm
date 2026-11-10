@@ -105,4 +105,19 @@ export interface SessionInfo {
      * KeepAliveSeconds is the resolved SSH keepalive interval; 0 means off.
      */
     "keepAliveSeconds"?: number;
+
+    /**
+     * LogPath is the file this session's output is being recorded to, empty
+     * when logging is off.
+     */
+    "logPath"?: string;
+}
+
+/**
+ * SessionLogInfo is what the settings screen shows: whether sessions are being
+ * recorded, and where the files go.
+ */
+export interface SessionLogInfo {
+    "enabled": boolean;
+    "dir": string;
 }

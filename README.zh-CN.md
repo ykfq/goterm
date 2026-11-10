@@ -35,6 +35,12 @@
 - 选中即复制（只在松手时触发）；全屏程序自己菜单里的 *Copy* 也能用（程序用 OSC 52 把文本交给终端）；多行粘贴先弹可编辑确认框。
 - 远端编码：UTF-8（默认）或 GB18030 / GBK / GB2312 / Big5 / Shift_JIS，流式解码——一个汉字被 64 KiB
   输出块切开也不会变成两个替换字符。
+- 切标签后键盘就在终端里：点一下标签就能直接输入，不用再点一次终端。`v-show` 换窗格发生在聚焦回调
+  之后，所以一帧后如果键盘没被真正的控件拿走，会再讨一次。
+- 大输出不积累内存：某个标签的终端解析跟不上时，GoTerm 让 Go 暂停读取那一个会话（剩下交给 TCP 窗口），
+  而不是把差额堆在 webview 里。滚动回看行数可调（设置 → Appearance → Scrollback，默认 4000 行）。
+- 可选的**会话日志**：每个会话一个文件，由 Go 写入，内容与终端收到的字节完全一致（含颜色序列，
+  与 `script(1)` 记录的东西一样）。设置 → Behaviour → Session log。
 
 **文件传输**
 - 原生 `trz`/`tsz`，带 trzsz 自己的进度条；文件拖进终端即上传。
@@ -76,7 +82,7 @@
 ## 安装
 
 从仓库的 [**Releases**](https://github.com/ykfq/goterm/releases) 页面下载
-`goterm-v1.3.0-windows-x64.exe` 和对应的 `.md5` / `.sha256`。那里的二进制是 GitHub Actions 根据 tag
+`goterm-v1.4.0-windows-x64.exe` 和对应的 `.md5` / `.sha256`。那里的二进制是 GitHub Actions 根据 tag
 构建的（[`.github/workflows/release.yml`](.github/workflows/release.yml)），不放进代码仓库。
 
 **单文件便携版**，没有安装包。WebView2（Wails 内嵌的浏览器引擎）在 Windows 10/11 上是自带的；
@@ -175,8 +181,8 @@ GoTerm 负责放到剪贴板）；`Ctrl+滚轮` 仍然缩放。
 
 | 分组 | 内容 |
 | --- | --- |
-| Appearance | 终端字体（只列等宽，GDI 枚举）、**块字符**、**远端文本编码**、终端背景色（六个预设或任意取色） |
-| Behaviour | 单词分隔符（实时预览双击会选中哪一段）、选中即复制、**Idle sessions**（anti-idle 与 nudge 方式）、**闲置保持保活**（无输入超过 1–744 小时后停发）、**Storage**（文件放在哪） |
+| Appearance | 终端字体（只列等宽，GDI 枚举）、**滚动回看行数**、**块字符**、**远端文本编码**、终端背景色（六个预设或任意取色） |
+| Behaviour | 单词分隔符（实时预览双击会选中哪一段）、选中即复制、**会话日志**、**Idle sessions**（anti-idle 与 nudge 方式）、**闲置保持保活**（无输入超过 1–744 小时后停发）、**Storage**（文件放在哪） |
 | Highlighting | 六套内置关键字规则（shell、bash 脚本、nginx 日志、nginx 配置、系统日志、数据形态）、自定义关键字/正则+颜色、`.msyn` 导入 |
 
 明暗主题是状态栏上的太阳/月亮图标；字号用 `Ctrl+=` / `Ctrl+-` / `Ctrl+0`。
@@ -200,6 +206,7 @@ GoTerm 负责放到剪贴板）；`Ctrl+滚轮` 仍然缩放。
 | `hosts.json` | 保存的主机，**不含任何密码** |
 | `known_hosts.json` | 钉住的主机指纹 |
 | `prefs.json` | 自定义状态目录的指针，永远留在默认目录里 |
+| `logs/` | 会话日志（设置 → Behaviour → Session log 打开时才有） |
 | `secrets.enc` + `master.key` | 只有使用密封文件后端时才有 |
 
 凭据管理器里的条目是通用凭据，名字为 `goterm/host/<id>/secret`。
