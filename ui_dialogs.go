@@ -114,6 +114,14 @@ func (a *App) settingsBehaviour(c *ui.Context) {
 			ui.Text(c, "Logs go to "+a.logDir+". The file holds the server's bytes, before decoding.").
 				FontSize(11).TextColor(c.Theme().TextMuted)
 
+			ui.Field(c, "Transfers", func() {
+				ui.Text(c, "tsz downloads save to "+a.downloadDir+". trz and rz ask for the files to upload.").
+					FontSize(11).TextColor(c.Theme().TextMuted)
+				if ui.Button(c, "Open download folder").Clicked() {
+					_ = mygo.Shell.OpenPath(a.downloadDir)
+				}
+			})
+
 			ui.Field(c, "Remote text encoding", func() {
 				names := encode.Names()
 				labels := make([]string, len(names))
@@ -133,7 +141,7 @@ func (a *App) settingsBehaviour(c *ui.Context) {
 					a.applySettings()
 				}
 			})
-			ui.Text(c, "Decoding applies to new terminals. Input is always sent as UTF-8.").
+			ui.Text(c, "Applies to open terminals immediately. Input is always sent as UTF-8.").
 				FontSize(11).TextColor(c.Theme().TextMuted)
 
 			ui.Field(c, "Keepalive stops after idle hours", func() {

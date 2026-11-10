@@ -29,12 +29,15 @@ This branch (`mygo-native`) replaces the 1.4.0 Wails/Vue/xterm frontend. What wo
   panel's directory. It rides the session's own SSH connection, so no second login.
 - **Host import/export**: one sealed file (scrypt + AES-256-GCM) with hosts and their passwords,
   through native file dialogs.
+- **trzsz and lrzsz**: `trz`/`tsz` and `rz`/`sz` are handled inside the session's byte stream
+  (trzsz-go with ZMODEM enabled), with the progress bar drawn in the terminal; downloads land in
+  `%APPDATA%\goterm\downloads`.
 - Settings in `settings.json`: theme, font family/size, scrollback (MB), logging, remote encoding
   (UTF-8/GB18030/Big5/Shift_JIS), select-to-copy, idle hours, data directory.
 
-Not ported yet (tracked in [plan2.md](plan2.md)): trzsz/ZMODEM transfers (SFTP covers file transfer),
-keyword highlighting (a VT emulator has no line hook), tab drag-reordering, and the known-hosts
-review beyond listing/forgetting.
+Not ported yet (tracked in [plan2.md](plan2.md)): keyword highlighting (a VT emulator has no line
+hook), the known-hosts review beyond listing/forgetting, and resizing the scrollback of an open
+terminal (reconnect applies it).
 
 ## Build
 

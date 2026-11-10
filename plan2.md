@@ -39,18 +39,21 @@
 - **P1/P2**：主机导入导出（scrypt+AES-GCM，原生保存/打开对话框，往返测试含密码）；
   SFTP 面板（列出/上传/下载/新建/重命名/删除/刷新、路径栏、状态与进度）；
   拖文件到终端即上传；`Ctrl+Shift+E` / 标签右键 / View 菜单开关；`--files` 启动即开。
+- **P3**：`transferConn` 把 `trzsz-go` 的 `TrzszFilter` 接在 SSH 字节流上，trzsz 与 ZMODEM 都已启用；
+  下载默认落到 `%APPDATA%\goterm\downloads`，上传弹原生文件选择框；关掉了库的 Windows 控制台协议改写。
+- **P4 部分**：标签拖拽换位（带活动标签跟随测试）；远端编码切换对已开会话即时生效
+  （`decodingReader`，不重建终端）。
 
 **尚未落地**
 
-- P3：trzsz、rz/sz、传输进度与输入闸门（SFTP 已可替代传文件）。
-- P4：标签拖拽排序、关键字高亮、单词分隔符、状态栏细化、编码切换对已开会话生效
-  （当前需重连）、滚动回看对已开终端生效（需重连）。
+- P4：关键字高亮（需你拍板）、单词分隔符；回看大小对已开终端需重连（终端库没有运行时 setter）。
 - P5：automation 端到端脚本、CI 首次全量验证。
 
 **验证记录**
 
 - `go build ./...`、`go vet ./...` 通过。
-- `go test .`：焦点两项、SFTP 面板渲染/选中、尺寸与进度格式、导出→删除→导入（含密码）均通过。
+- `go test .`：焦点两项、SFTP 面板渲染/选中、尺寸与进度格式、导出→删除→导入（含密码）、
+  标签换位、trzsz 真实下载（sshtest 的 TrzszShell，57 KB 字节目录一致）均通过。
 - `go test ./internal/sshx`（输出队列/背压/日志共存）通过。
 - 真机：`--connect --files` 连本地 sshtest（SFTP 根目录预置 `logs/`、`readme.txt`），
   面板正确列出条目，终端与面板并排 68 列；截图只留在本地。
@@ -105,7 +108,7 @@
 | 自定义背景色 / 主题 | `terminal.Theme` + Ghostty 主题列表 | 🚧 |
 | htop/systemctl 撑不满 | VT 自带 reflow + resize | ✅ |
 | 块字符粘连 | Ghostty 自绘块/框线，无需开关 | ✅（旧开关取消） |
-| 中文乱码 → GB18030/Big5/Shift_JIS | Go 侧流式转码（`transform.NewReader`），比浏览器更可靠 | 🚧 |
+| 中文乱码 → GB18030/Big5/Shift_JIS | Go 侧流式转码（`transform.NewReader`），设置改动对已开会话即时生效 | ✅ |
 
 ### 2.3 键盘与鼠标（plan.md §4）
 
@@ -143,14 +146,14 @@
 
 | 需求 | 2.x 做法 | 状态 |
 | --- | --- | --- |
-| trzsz（trz/tsz）拦截 + 进度 | 在 Go 侧 SSH 字节流上做拦截器 + 原生进度条 | ⏸️ P3 |
-| ZMODEM `rz`/`sz` | Go 侧扫描器与协议实现 | ⏸️ P3 |
+| trzsz（trz/tsz）拦截 + 进度 | `transferConn` 用 `trzsz-go` 的 `TrzszFilter` 包住 SSH 字节流；进度条由过滤器画进终端 | ✅ |
+| ZMODEM `rz`/`sz` | 同一过滤器 `EnableZmodem: true`，下载到 `%APPDATA%\goterm\downloads` | ✅ |
 | 拖文件进终端即上传 | `ui.DroppedFiles` + SFTP 上传 | ✅ |
 | 原生文件选择框 | mygo 桌面 API（`mygo.Dialog`） | ✅ |
 | 路径限制 / `../` 消毒 | `internal/sftpx` 不变 | ✅ |
 | 取消不报错 | 原生对话框取消语义 | ✅ |
 | SFTP 面板 | `internal/sftpx` + 原生列表 | ✅ |
-| 传输中不插字节（红线 4） | 拦截器与输入闸门保留 | ⏸️ P3 |
+| 传输中不插字节（红线 4） | 传输期间终端字节由过滤器独占，UI 不插手 | ✅ |
 
 ### 2.6 界面、主题与设置（plan.md §7）
 
@@ -161,7 +164,7 @@
 | 标题栏跟随主题 | 原生窗口，系统处理 | ✅ |
 | 设置面板分页 | `ui.Tabs` + `ui.Modal` | 🚧 |
 | 块字符开关 | 取消（Ghostty 自绘） | ❌ |
-| 远端编码 | 设置 → 编码，Go 转码 | 🚧 |
+| 远端编码 | 设置 → 编码，Go 转码（即时生效） | ✅ |
 | 状态栏（版本/平台/凭据后端） | 底部状态栏 | 🚧 |
 | 不啰嗦的 toast | `c.Toast` 只在必要时 | 🚧 |
 | 设置即时生效并持久化 | `settings.json`，终端 `SetFont/SetTheme` | 🚧 |
@@ -259,5 +262,6 @@ go tool mygo build          # 或 wails 替代品：mygo build
    默认按 (a) 迁移，等你拍板。
 2. **滚动回看单位**：Ghostty 按字节，不再按行；默认 8 MB。
 3. **设置迁移**：旧 localStorage 设置不迁移，升级后回默认值。
-4. **trzsz/ZMODEM**：需要在 Go 字节流层重写拦截器，是 P3 的主要工作量；在完成前，SFTP 仍可传文件。
+4. **trzsz/ZMODEM**：已接 `trzsz-go` 的 `TrzszFilter`（`transfer.go`），关掉了它的 Windows 控制台协议改写（我们不是 ConPTY），
+   下载默认落到 `%APPDATA%\goterm\downloads`；上传弹原生文件选择框。
 5. **调试代理/本机路径**：一律不进仓库；`.toolchain/`、`out/`、`bin/` 在 `.gitignore`。

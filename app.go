@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -45,6 +46,14 @@ type App struct {
 	tabs   []*Tab
 	active int
 
+	// The tab being dragged, -1 when none.
+	dragFrom int
+	dragDX   float32
+	// A reorder requested while the tab row was being built; applied once the
+	// row finishes so the loop does not see the slice change under it.
+	pendingMoveFrom int
+	pendingMoveTo   int
+
 	// startHost is --connect: a saved host to open once the window exists.
 	startHost string
 	// startFiles is --files: show the file panel for that first session.
@@ -68,8 +77,9 @@ type App struct {
 	status  string
 
 	// logDir and configPath are resolved once; the settings dialog shows them.
-	logDir     string
-	configPath string
+	logDir      string
+	configPath  string
+	downloadDir string
 
 	mu sync.Mutex
 }
@@ -141,20 +151,31 @@ func NewApp() (*App, error) {
 	if err != nil {
 		return nil, fmt.Errorf("locate log directory: %w", err)
 	}
+	downloadDir, err := appdir.Path("downloads")
+	if err != nil {
+		return nil, fmt.Errorf("locate download directory: %w", err)
+	}
+	if err := os.MkdirAll(downloadDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create download directory: %w", err)
+	}
 	if _, err := mgr.ConfigureSessionLogging(prefs.SessionLogging, logDir); err != nil {
 		log.Printf("goterm: session logging: %v", err)
 	}
 
 	a := &App{
-		mgr:        mgr,
-		hosts:      hosts,
-		secs:       secs,
-		dir:        dir,
-		prefs:      prefs,
-		prefOK:     true,
-		openGroups: map[string]bool{},
-		logDir:     logDir,
-		configPath: filepath.Join(dir, "settings.json"),
+		mgr:             mgr,
+		hosts:           hosts,
+		secs:            secs,
+		dir:             dir,
+		prefs:           prefs,
+		prefOK:          true,
+		openGroups:      map[string]bool{},
+		dragFrom:        -1,
+		pendingMoveFrom: -1,
+		pendingMoveTo:   -1,
+		logDir:          logDir,
+		downloadDir:     downloadDir,
+		configPath:      filepath.Join(dir, "settings.json"),
 	}
 	if list, err := fonts.List(); err == nil {
 		for _, f := range fonts.Monospace(list) {
@@ -309,6 +330,29 @@ func (a *App) selectTab(i int) {
 	a.active = i
 	if t := a.current(); t != nil {
 		t.Focus.Focus()
+	}
+}
+
+// moveTab reorders the tab bar, keeping the same tab active and focused.
+func (a *App) moveTab(from, to int) {
+	if from < 0 || to < 0 || from >= len(a.tabs) || to >= len(a.tabs) || from == to {
+		return
+	}
+	activeTab := a.current()
+	t := a.tabs[from]
+	a.tabs = append(a.tabs[:from], a.tabs[from+1:]...)
+	tail := append([]*Tab{t}, a.tabs[to:]...)
+	a.tabs = append(a.tabs[:to], tail...)
+	if activeTab != nil {
+		for i, candidate := range a.tabs {
+			if candidate == activeTab {
+				a.active = i
+				break
+			}
+		}
+	}
+	if a.win != nil {
+		a.win.Invalidate()
 	}
 }
 
@@ -492,7 +536,7 @@ func friendlyError(err error) string {
 // startTerminal builds the emulator for a connected tab. It runs on the main
 // thread because creating a terminal sets up the view-side resources.
 func (a *App) startTerminal(t *Tab) {
-	conn, err := newSessionConn(t.Sess, encode.Parse(a.prefs.Encoding))
+	conn, err := newTransferConn(t.Sess, encode.Parse(a.prefs.Encoding), a.downloadDir)
 	if err != nil {
 		t.Status = StatusFailed
 		t.Err = err.Error()
@@ -609,6 +653,9 @@ func (a *App) applySettings() {
 			t.Term.SetCopyOnSelect(terminal.CopyOnSelectClipboard)
 		} else {
 			t.Term.SetCopyOnSelect(terminal.CopyOnSelectNone)
+		}
+		if sw, ok := t.Conn.(interface{ SetEncoding(encode.Name) }); ok {
+			sw.SetEncoding(encode.Parse(a.prefs.Encoding))
 		}
 	}
 	if err := a.prefs.Save(a.configPath); err != nil {

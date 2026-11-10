@@ -246,6 +246,14 @@ func (a *App) tabBar(c *ui.Context) {
 			})
 			ui.Button(c, "+").Label("New host").Tooltip("New host (Ctrl+Shift+T)").OnClick(a.openNewHost)
 		})
+		if a.pendingMoveFrom >= 0 && a.pendingMoveTo >= 0 {
+			from, to := a.pendingMoveFrom, a.pendingMoveTo
+			a.pendingMoveFrom, a.pendingMoveTo = -1, -1
+			a.moveTab(from, to)
+			if a.dragFrom >= 0 {
+				a.dragFrom = to
+			}
+		}
 		ui.Divider(c)
 	})
 }
@@ -276,6 +284,26 @@ func (a *App) tabChip(c *ui.Context, i int, t *Tab) {
 	})
 	if chip.Clicked() {
 		a.selectTab(i)
+	}
+	// Dragging a tab past its neighbour swaps them; the move itself waits
+	// until the row has finished building.
+	if chip.Pressed() && a.dragFrom == -1 {
+		a.dragFrom = i
+		a.dragDX = 0
+	}
+	if dx, _, held := chip.Dragged(); held && a.dragFrom == i {
+		a.dragDX += dx
+		if a.dragDX > 60 && i < len(a.tabs)-1 {
+			a.pendingMoveFrom, a.pendingMoveTo = i, i+1
+			a.dragDX = 0
+		} else if a.dragDX < -60 && i > 0 {
+			a.pendingMoveFrom, a.pendingMoveTo = i, i-1
+			a.dragDX = 0
+		}
+	}
+	if _, _, ended := chip.DragEnded(); ended {
+		a.dragFrom = -1
+		a.dragDX = 0
 	}
 	chip.ContextMenu(func(m *ui.Menu) {
 		if m.Item("Duplicate").Chosen() {
@@ -397,7 +425,7 @@ func (a *App) statusBar(c *ui.Context) {
 	ui.Row(c).Height(24).Padding(0, 10).Gap(12).Background(c.Theme().Surface).Children(func() {
 		ui.Text(c, left).FontSize(10).TextColor(c.Theme().TextMuted).Grow(1).MaxLines(1)
 		if t != nil && t.Sess != nil {
-			ui.Text(c, fmt.Sprintf("%d bytes in · %d out", info.BytesIn, info.BytesOut)).
+			ui.Text(c, fmt.Sprintf("%d bytes in · %d out · queued %s", info.BytesIn, info.BytesOut, humanSize(int64(t.Sess.OutputQueueDepth())))).
 				FontSize(10).TextColor(c.Theme().TextMuted)
 		}
 	})
