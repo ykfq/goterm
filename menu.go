@@ -25,12 +25,22 @@ func (a *App) installMenu() {
 				a.post(func() { a.showSettings = true })
 			}},
 			mygo.Separator(),
+			{Label: "Export Hosts…", Click: func(*mygo.MenuItem, *mygo.Window) {
+				a.post(a.openExport)
+			}},
+			{Label: "Import Hosts…", Click: func(*mygo.MenuItem, *mygo.Window) {
+				a.post(a.openImport)
+			}},
+			mygo.Separator(),
 			{Role: mygo.RoleQuit},
 		}},
 		{Role: mygo.RoleEditMenu},
 		{Label: "View", Submenu: []*mygo.MenuItem{
 			{Label: "Find in Terminal…", Accelerator: "CmdOrCtrl+Shift+F", Click: func(*mygo.MenuItem, *mygo.Window) {
 				a.post(a.openFind)
+			}},
+			{Label: "File Panel", Accelerator: "CmdOrCtrl+Shift+E", Click: func(*mygo.MenuItem, *mygo.Window) {
+				a.post(func() { a.toggleSFTP(a.current()) })
 			}},
 			{Label: "Next Tab", Accelerator: "Ctrl+Tab", Click: func(*mygo.MenuItem, *mygo.Window) {
 				a.post(func() { a.selectTab((a.active + 1) % max(len(a.tabs), 1)) })

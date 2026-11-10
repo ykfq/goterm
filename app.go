@@ -47,6 +47,8 @@ type App struct {
 
 	// startHost is --connect: a saved host to open once the window exists.
 	startHost string
+	// startFiles is --files: show the file panel for that first session.
+	startFiles bool
 
 	query        string
 	selectedHost string
@@ -62,6 +64,7 @@ type App struct {
 
 	prompt  *Prompt
 	confirm *Confirm
+	vault   *Vault
 	status  string
 
 	// logDir and configPath are resolved once; the settings dialog shows them.
@@ -96,6 +99,9 @@ type Tab struct {
 	SearchTotal   int
 	SearchCurrent int
 	Searching     bool
+
+	// SFTP is the file panel for this tab, nil until it is first opened.
+	SFTP *SFTPPanel
 
 	Started time.Time
 	titleMu sync.Mutex
@@ -174,6 +180,22 @@ func NewApp() (*App, error) {
 					if a.win != nil {
 						a.win.Invalidate()
 					}
+				}
+			})
+		case sshx.EventSFTPProgress:
+			ev, ok := payload.(sshx.SFTPProgressEvent)
+			if !ok {
+				return
+			}
+			a.post(func() {
+				for _, t := range a.tabs {
+					if t.Sess == nil || t.Sess.ID() != ev.SessionID || t.SFTP == nil {
+						continue
+					}
+					t.SFTP.Progress = sftpProgressText(ev)
+				}
+				if a.win != nil {
+					a.win.Invalidate()
 				}
 			})
 		}
@@ -516,6 +538,10 @@ func (a *App) startTerminal(t *Tab) {
 	t.Term = term
 	t.Conn = conn
 	t.Focus.Focus()
+	if a.startFiles {
+		a.startFiles = false
+		a.toggleSFTP(t)
+	}
 	if a.win != nil {
 		a.win.Invalidate()
 	}

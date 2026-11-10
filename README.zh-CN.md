@@ -22,10 +22,13 @@
 - 真终端：颜色、鼠标上报、回看、选择、复制粘贴、搜索（Ctrl+Shift+F）、输入法在光标处组字、
   OSC 52 复制。
 - 会话日志写入 `%APPDATA%\goterm\logs`（默认关闭，运行时开关即时生效）。
+- **SFTP 文件面板**（Ctrl+Shift+E、标签右键或 `--files`）：浏览、上传、下载、新建目录、重命名、
+  删除、刷新，带进度；把文件拖到终端即上传到面板当前目录。复用同一 SSH 连接，不二次登录。
+- **主机导入导出**：一个加密文件（scrypt + AES-256-GCM）带走主机与密码，走原生文件对话框。
 - 设置存 `settings.json`：主题、字体与字号、回看（MB）、日志、远端编码
   （UTF-8/GB18030/Big5/Shift_JIS）、选中即复制、闲置小时数、数据目录。
 
-尚未迁移（见 [plan2.md](plan2.md)）：trzsz/ZMODEM 传输、SFTP 面板与拖拽上传、主机导入导出、
+尚未迁移（见 [plan2.md](plan2.md)）：trzsz/ZMODEM 传输（文件传输已由 SFTP 覆盖）、
 关键字高亮（VT 模拟器没有逐行着色钩子）、标签拖拽排序、Known hosts 的复核（目前只能列出与遗忘）。
 
 ## 构建
@@ -50,9 +53,9 @@ go tool mygo build -platform windows/amd64 -o out -skip-installer
 ## 使用
 
 - **新建主机**（Ctrl+Shift+T），填地址并选择认证方式，然后在侧栏双击主机连接。
-- 终端内搜索：Ctrl+Shift+F；关闭标签：Ctrl+Shift+W；设置：Ctrl+,。
-- 标签右键：Duplicate（复制）、Reconnect（重连）。
-- `goterm.exe --connect <主机ID>` 启动时直接连接已保存的主机。
+- 终端内搜索：Ctrl+Shift+F；文件面板：Ctrl+Shift+E；关闭标签：Ctrl+Shift+W；设置：Ctrl+,。
+- 标签右键：Duplicate（复制）、Reconnect（重连）。文件拖到终端即上传。
+- `goterm.exe --connect <主机ID>` 启动时直接连接已保存的主机；加 `--files` 同时打开文件面板。
 
 密码存放在 Windows 凭据管理器（没有密钥环的平台回退密封文件），永远不会写进 `hosts.json`。
 会话日志记录的是服务器原始字节（解码前），与 SSH 实际送达的内容一致。

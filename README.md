@@ -24,12 +24,17 @@ This branch (`mygo-native`) replaces the 1.4.0 Wails/Vue/xterm frontend. What wo
 - Real terminal: colours, mouse reporting, scrollback, selection, copy/paste, search
   (Ctrl+Shift+F), IME composition at the cursor, OSC 52 copy.
 - Session logging to `%APPDATA%\goterm\logs` (off by default, switchable at runtime).
+- **SFTP file panel** (Ctrl+Shift+E, tab menu, or `--files`): browse, upload, download, make
+  folders, rename, delete, refresh, with progress. Drop files on the terminal to upload them to the
+  panel's directory. It rides the session's own SSH connection, so no second login.
+- **Host import/export**: one sealed file (scrypt + AES-256-GCM) with hosts and their passwords,
+  through native file dialogs.
 - Settings in `settings.json`: theme, font family/size, scrollback (MB), logging, remote encoding
   (UTF-8/GB18030/Big5/Shift_JIS), select-to-copy, idle hours, data directory.
 
-Not ported yet (tracked in [plan2.md](plan2.md)): trzsz/ZMODEM transfers, the SFTP panel and
-drag-and-drop upload, host import/export, keyword highlighting (a VT emulator has no line hook),
-tab drag-reordering, and the known-hosts review beyond listing/forgetting.
+Not ported yet (tracked in [plan2.md](plan2.md)): trzsz/ZMODEM transfers (SFTP covers file transfer),
+keyword highlighting (a VT emulator has no line hook), tab drag-reordering, and the known-hosts
+review beyond listing/forgetting.
 
 ## Build
 
@@ -54,9 +59,11 @@ The release workflow builds a zip with both files, the licence and checksums.
 
 - **New host** (Ctrl+Shift+T), fill in the address and pick an authentication method, then
   double-click the host in the sidebar.
-- **Find** in the terminal: Ctrl+Shift+F. **Close tab**: Ctrl+Shift+W. **Settings**: Ctrl+,.
-- **Duplicate / Reconnect**: right-click a tab.
-- `goterm.exe --connect <host-id>` opens a saved host directly at start-up.
+- **Find** in the terminal: Ctrl+Shift+F. **File panel**: Ctrl+Shift+E. **Close tab**:
+  Ctrl+Shift+W. **Settings**: Ctrl+,.
+- **Duplicate / Reconnect**: right-click a tab. Drop files on the terminal to upload them.
+- `goterm.exe --connect <host-id>` opens a saved host at start-up; add `--files` to bring up its
+  file panel too.
 
 Passwords live in Windows Credential Manager (or a sealed file where there is no key ring) and are
 never written to `hosts.json`. Session logs record the server's bytes before decoding, so they match

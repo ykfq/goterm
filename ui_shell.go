@@ -30,6 +30,9 @@ func (a *App) view(c *ui.Context) {
 	if c.Shortcut(ui.Ctrl|ui.Shift, ui.KeyW) {
 		a.post(func() { a.closeTab(a.active) })
 	}
+	if c.Shortcut(ui.Ctrl|ui.Shift, ui.KeyE) {
+		a.toggleSFTP(a.current())
+	}
 
 	ui.Row(c).Fill().Children(func() {
 		split := ui.Split(c, &a.prefs.SidebarWidth,
@@ -45,6 +48,7 @@ func (a *App) view(c *ui.Context) {
 	a.hostEditorDialog(c)
 	a.promptDialog(c)
 	a.confirmDialog(c)
+	a.vaultDialog(c)
 	a.knownHostsDialog(c)
 	a.aboutDialog(c)
 }
@@ -170,7 +174,8 @@ func (a *App) hostRow(c *ui.Context, h hoststore.Host) {
 }
 
 func (a *App) main(c *ui.Context) {
-	ui.Column(c).Fill().Background(c.Theme().Background).Children(func() {
+	col := ui.Column(c).Fill().Background(c.Theme().Background)
+	col.Children(func() {
 		a.tabBar(c)
 		t := a.current()
 		if t == nil {
@@ -184,32 +189,47 @@ func (a *App) main(c *ui.Context) {
 		if t.Term != nil && t.SearchOpen {
 			a.findBar(c, t)
 		}
-		if t.Term != nil {
-			terminal.View(c, t.Term).Bind(&t.Focus).Label("Terminal " + tabTitle(t)).Fill()
-		} else {
-			ui.Column(c).Fill().Center().Gap(10).Children(func() {
-				ui.Spinner(c)
-				ui.Text(c, t.Title).Bold()
-				switch t.Status {
-				case StatusFailed:
-					ui.Text(c, t.Err).FontSize(12).TextColor(c.Theme().Danger)
-				case StatusClosed:
-					ui.Text(c, "Session closed.").FontSize(12).TextColor(c.Theme().TextMuted)
-				default:
-					ui.Text(c, "Connecting…").FontSize(12).TextColor(c.Theme().TextMuted)
+		body := ui.Row(c).Grow(1).AlignItems(ui.Stretch)
+		body.Children(func() {
+			pane := ui.Column(c).Grow(1)
+			pane.Children(func() {
+				if t.Term != nil {
+					terminal.View(c, t.Term).Bind(&t.Focus).Label("Terminal " + tabTitle(t)).Fill()
+					return
 				}
-				if t.Status == StatusFailed || t.Status == StatusClosed {
-					ui.Row(c).Gap(8).Children(func() {
-						if ui.PrimaryButton(c, "Reconnect").Clicked() {
-							a.post(func() { a.reconnect(t) })
-						}
-						if ui.Button(c, "Close tab").Clicked() {
-							a.post(func() { a.closeTab(indexOfTab(a.tabs, t)) })
-						}
-					})
-				}
+				ui.Column(c).Fill().Center().Gap(10).Children(func() {
+					ui.Spinner(c)
+					ui.Text(c, t.Title).Bold()
+					switch t.Status {
+					case StatusFailed:
+						ui.Text(c, t.Err).FontSize(12).TextColor(c.Theme().Danger)
+					case StatusClosed:
+						ui.Text(c, "Session closed.").FontSize(12).TextColor(c.Theme().TextMuted)
+					default:
+						ui.Text(c, "Connecting…").FontSize(12).TextColor(c.Theme().TextMuted)
+					}
+					if t.Status == StatusFailed || t.Status == StatusClosed {
+						ui.Row(c).Gap(8).Children(func() {
+							if ui.PrimaryButton(c, "Reconnect").Clicked() {
+								a.post(func() { a.reconnect(t) })
+							}
+							if ui.Button(c, "Close tab").Clicked() {
+								a.post(func() { a.closeTab(indexOfTab(a.tabs, t)) })
+							}
+						})
+					}
+				})
 			})
-		}
+			// Dropping a file anywhere on the terminal uploads it to the file
+			// panel's directory (the remote home before it ever listed one).
+			if files := pane.DroppedFiles(); len(files) > 0 && t.Sess != nil {
+				a.post(func() { a.sftpUploadPaths(t, files) })
+			}
+			if pane.FileDragOver() {
+				pane.Border(2, c.Theme().Accent)
+			}
+			a.sftpView(c, t)
+		})
 		a.statusBar(c)
 	})
 }
@@ -268,6 +288,12 @@ func (a *App) tabChip(c *ui.Context, i int, t *Tab) {
 			a.post(func() {
 				a.selectTab(indexOfTab(a.tabs, t))
 				a.openFind()
+			})
+		}
+		if m.Item("File panel").Checked(t.SFTP != nil && t.SFTP.Open).Chosen() {
+			a.post(func() {
+				a.selectTab(indexOfTab(a.tabs, t))
+				a.toggleSFTP(t)
 			})
 		}
 		m.Separator()

@@ -177,6 +177,21 @@ func (a *App) settingsStorage(c *ui.Context) {
 		ui.Field(c, "Credential store", func() {
 			ui.Text(c, a.secretBackend()).FontSize(12)
 		})
+		ui.Divider(c)
+		ui.Field(c, "Host list", func() {
+			ui.Text(c, "Move hosts and their passwords to another machine as one sealed file.").
+				FontSize(11).TextColor(c.Theme().TextMuted)
+			ui.Row(c).Gap(8).Children(func() {
+				if ui.Button(c, "Export…").Clicked() {
+					a.showSettings = false
+					a.openExport()
+				}
+				if ui.Button(c, "Import…").Clicked() {
+					a.showSettings = false
+					a.openImport()
+				}
+			})
+		})
 	})
 }
 

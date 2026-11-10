@@ -36,11 +36,13 @@
   用真实 SSH 服务器验证“终端收到的字节 = 日志内容”，且不再发 base64 事件。
 - 转码：`internal/encode`（GB18030/Big5/Shift_JIS 流式解码，跨读边界安全）。
 - 搜索：终端 `Search/SearchNext/SearchPrevious` + 原生查找条。
+- **P1/P2**：主机导入导出（scrypt+AES-GCM，原生保存/打开对话框，往返测试含密码）；
+  SFTP 面板（列出/上传/下载/新建/重命名/删除/刷新、路径栏、状态与进度）；
+  拖文件到终端即上传；`Ctrl+Shift+E` / 标签右键 / View 菜单开关；`--files` 启动即开。
 
 **尚未落地**
 
-- P2：SFTP 面板、拖拽上传、原生文件选择器（导入导出/密钥已用 mygo Dialog，SFTP 未接）。
-- P3：trzsz、rz/sz、传输进度与输入闸门。
+- P3：trzsz、rz/sz、传输进度与输入闸门（SFTP 已可替代传文件）。
 - P4：标签拖拽排序、关键字高亮、单词分隔符、状态栏细化、编码切换对已开会话生效
   （当前需重连）、滚动回看对已开终端生效（需重连）。
 - P5：automation 端到端脚本、CI 首次全量验证。
@@ -48,7 +50,10 @@
 **验证记录**
 
 - `go build ./...`、`go vet ./...` 通过。
-- `go test .`（焦点两项）通过；`go test ./internal/sshx`（输出队列/背压/日志共存）通过。
+- `go test .`：焦点两项、SFTP 面板渲染/选中、尺寸与进度格式、导出→删除→导入（含密码）均通过。
+- `go test ./internal/sshx`（输出队列/背压/日志共存）通过。
+- 真机：`--connect --files` 连本地 sshtest（SFTP 根目录预置 `logs/`、`readme.txt`），
+  面板正确列出条目，终端与面板并排 68 列；截图只留在本地。
 - 真机：`--connect` 连本地 sshtest，窗口显示终端、直接发送按键即到达会话；截图只留在本地。
 - 打包：`go tool mygo build -platform windows/amd64` 产出 `GoTerm.exe` + `ghostty-vt.dll`；
   用该产物连 sshtest，日志文件 `logs/goterm-<时间>-tester_127.0.0.1_2222.log` 正常写入。
@@ -140,11 +145,11 @@
 | --- | --- | --- |
 | trzsz（trz/tsz）拦截 + 进度 | 在 Go 侧 SSH 字节流上做拦截器 + 原生进度条 | ⏸️ P3 |
 | ZMODEM `rz`/`sz` | Go 侧扫描器与协议实现 | ⏸️ P3 |
-| 拖文件进终端即上传 | `ui.DroppedFiles` + SFTP 上传 | ⏸️ P2 |
-| 原生文件选择框 | mygo 桌面 API（`mygo.Dialog`） | ⏸️ P2 |
+| 拖文件进终端即上传 | `ui.DroppedFiles` + SFTP 上传 | ✅ |
+| 原生文件选择框 | mygo 桌面 API（`mygo.Dialog`） | ✅ |
 | 路径限制 / `../` 消毒 | `internal/sftpx` 不变 | ✅ |
-| 取消不报错 | 原生对话框取消语义 | ⏸️ P2 |
-| SFTP 面板 | `internal/sftpx` + 原生列表 | ⏸️ P2 |
+| 取消不报错 | 原生对话框取消语义 | ✅ |
+| SFTP 面板 | `internal/sftpx` + 原生列表 | ✅ |
 | 传输中不插字节（红线 4） | 拦截器与输入闸门保留 | ⏸️ P3 |
 
 ### 2.6 界面、主题与设置（plan.md §7）
@@ -161,7 +166,7 @@
 | 不啰嗦的 toast | `c.Toast` 只在必要时 | 🚧 |
 | 设置即时生效并持久化 | `settings.json`，终端 `SetFont/SetTheme` | 🚧 |
 | Scrollback / Session log 设置 | 见 §2.4 | 🚧 |
-| 状态目录可改 | `internal/appdir` 不变，原生目录选择 | ⏸️ P2 |
+| 状态目录可改 | `internal/appdir` 不变，原生目录选择 | ✅（下次启动生效） |
 
 ### 2.7 主机资产、凭据与安全（plan.md §8）
 
@@ -169,7 +174,7 @@
 | --- | --- | --- |
 | `hosts.json` 不含密码 | 不变 | ✅ |
 | Windows 凭据管理器 / 密封文件 | 不变 | ✅ |
-| 导入导出（scrypt+AES-GCM） | 不变；原生保存/打开对话框 | ⏸️ P1 |
+| 导入导出（scrypt+AES-GCM） | 不变；原生保存/打开对话框 | ✅ |
 | 导入幂等、缺密码不清本地 | `hoststore.Import` 不变 | ✅ |
 | `.ppk` / `.pub` 明确报错 | 不变 | ✅ |
 | 密码永不进 UI 进程 | 原生 UI 与 Go 同进程，仍不落盘、不写日志 | ✅ |

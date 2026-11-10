@@ -30,7 +30,6 @@ func (c *idleConn) Resize(cols, rows int) error { return nil }
 // migration: changing tabs must hand the keyboard to the new terminal, so the
 // user can type without clicking the pane first.
 func TestSwitchingTabsPutsTheKeyboardInTheTerminal(t *testing.T) {
-	t.Setenv("GOTERM_DIR", t.TempDir())
 	app, err := NewApp()
 	if err != nil {
 		t.Fatal(err)
@@ -85,7 +84,6 @@ func TestSwitchingTabsPutsTheKeyboardInTheTerminal(t *testing.T) {
 // 1.x bug subtle: the tab is switched before its pane is laid out. Focus must
 // be remembered, not dropped.
 func TestFocusRequestWaitsForAHiddenTerminal(t *testing.T) {
-	t.Setenv("GOTERM_DIR", t.TempDir())
 	app, err := NewApp()
 	if err != nil {
 		t.Fatal(err)
