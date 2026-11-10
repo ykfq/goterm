@@ -2,7 +2,6 @@ package sshx
 
 import (
 	"bytes"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -99,6 +98,12 @@ type Session struct {
 	// lock covers the user switching recording off while output arrives.
 	logMu sync.Mutex
 	log   *sessionLog
+
+	// out is the attached terminal's byte queue (see attach.go). Nil until a
+	// terminal asks for the output; then the pump writes bytes there instead
+	// of emitting base64 events.
+	outMu sync.Mutex
+	out   *outQueue
 
 	finishOnce sync.Once
 }
@@ -293,6 +298,9 @@ func (s *Session) pump() {
 	// both readers are done: a connection that dies mid-line still leaves a
 	// complete log up to the last byte that arrived.
 	defer s.closeLog()
+	// Once the pump has flushed what it had, a terminal blocked on Read gets
+	// EOF instead of waiting for a program that is gone.
+	defer s.closeOutput()
 
 	var buf []byte
 	flush := func() {
@@ -302,7 +310,7 @@ func (s *Session) pump() {
 		}
 		s.currentLog().write(buf)
 		s.currentLog().flush()
-		s.mgr.emit(EventData, DataEvent{SessionID: s.id, Data: base64.StdEncoding.EncodeToString(buf)})
+		s.deliver(buf)
 		buf = nil
 	}
 
@@ -333,7 +341,7 @@ func (s *Session) pump() {
 			buf = append(buf, chunk...)
 			for len(buf) >= maxChunk {
 				s.currentLog().write(buf[:maxChunk])
-				s.mgr.emit(EventData, DataEvent{SessionID: s.id, Data: base64.StdEncoding.EncodeToString(buf[:maxChunk])})
+				s.deliver(buf[:maxChunk])
 				buf = buf[maxChunk:]
 			}
 		case <-ticker.C:

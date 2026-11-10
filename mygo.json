@@ -1,0 +1,8 @@
+{
+  "name": "GoTerm",
+  "identifier": "dev.ykfq.goterm",
+  "version": "2.0.0",
+  "macos": {
+    "minimumSystemVersion": "13.0"
+  }
+}

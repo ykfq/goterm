@@ -1,786 +1,747 @@
-// Package main is GoTerm's binding layer: the thin, boring surface the
-// frontend calls into. Everything with real logic lives in internal/*, which is
-// why this file is testable without a window.
 package main
 
 import (
-	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"os"
-	"path"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/plugins/terminal"
+	"github.com/egoist/mygo/ui"
 
 	"github.com/ykfq/goterm/internal/appdir"
+	"github.com/ykfq/goterm/internal/encode"
 	"github.com/ykfq/goterm/internal/fonts"
-	"github.com/ykfq/goterm/internal/hostport"
 	"github.com/ykfq/goterm/internal/hoststore"
 	"github.com/ykfq/goterm/internal/secrets"
-	"github.com/ykfq/goterm/internal/sftpx"
+	"github.com/ykfq/goterm/internal/settings"
 	"github.com/ykfq/goterm/internal/sshx"
-	"github.com/ykfq/goterm/internal/wintheme"
 )
 
-// Version is stamped by the build; the UI shows it in the status bar.
-const Version = "1.4.0"
+// Version is what the status bar and About show.
+const Version = "2.0.0"
 
-// App is the object bound to the frontend. Every exported method here is
-// callable from TypeScript, so keep signatures additive.
+// App is GoTerm's state. In 1.x this type was a Wails service and the frontend
+// called it over IPC; now it is an ordinary Go value that the view reads on the
+// main thread and background work updates through win.Update.
 type App struct {
-	ctx context.Context
+	win *mygo.Window
 
-	mu      sync.Mutex
-	emit    sshx.EmitFunc
-	pings   int
-	started time.Time
+	mgr    *sshx.Manager
+	hosts  *hoststore.Store
+	secs   *secrets.Store
+	dir    string
+	prefs  settings.Settings
+	prefOK bool
 
-	mgr     *sshx.Manager
-	hosts   *hoststore.Store
-	secrets *secrets.Store
+	fonts []string
 
-	// win is the app window, handed over by main once it exists. Nil in tests,
-	// which is why every use of it is guarded.
-	win *application.WebviewWindow
+	tabs   []*Tab
+	active int
+
+	// The tab being dragged, -1 when none.
+	dragFrom int
+	dragDX   float32
+	// A reorder requested while the tab row was being built; applied once the
+	// row finishes so the loop does not see the slice change under it.
+	pendingMoveFrom int
+	pendingMoveTo   int
+
+	// startHost is --connect: a saved host to open once the window exists.
+	startHost string
+	// startFiles is --files: show the file panel for that first session.
+	startFiles bool
+
+	query        string
+	selectedHost string
+	openGroups   map[string]bool
+
+	showSettings   bool
+	showKnownHosts bool
+	showHostEditor bool
+	showAbout      bool
+	settingsPage   int
+
+	editor HostEditor
+
+	prompt  *Prompt
+	confirm *Confirm
+	vault   *Vault
+	status  string
+
+	// logDir and configPath are resolved once; the settings dialog shows them.
+	logDir      string
+	configPath  string
+	downloadDir string
+
+	mu sync.Mutex
 }
 
-// NewApp wires up state directories, the secret backend, the host list and the
-// SSH manager. It is safe to call before a window exists; events are dropped
-// until startup hands us a context.
+// Tab is one terminal tab: a remote PTY, its emulator and what the tab bar
+// shows.
+type Tab struct {
+	ID     string
+	HostID string
+	Title  string
+	Status string // connecting | connected | closed | failed
+	Err    string
+
+	Sess  *sshx.Session
+	Term  *terminal.Terminal
+	Conn  io.Closer
+	Focus ui.Handle
+
+	Cfg sshx.Config
+	OV  hoststore.ConnectOverrides
+
+	LogPath string
+	Via     string
+
+	SearchOpen    bool
+	SearchQuery   string
+	SearchTotal   int
+	SearchCurrent int
+	Searching     bool
+
+	// SFTP is the file panel for this tab, nil until it is first opened.
+	SFTP *SFTPPanel
+
+	Started time.Time
+	titleMu sync.Mutex
+
+	// AuthFailures counts refused secret prompts, so the dialog can stop at
+	// three instead of looping forever.
+	AuthFailures int
+}
+
+const (
+	StatusConnecting = "connecting"
+	StatusConnected  = "connected"
+	StatusClosed     = "closed"
+	StatusFailed     = "failed"
+)
+
+// NewApp opens the state directory, the host store and the SSH manager.
 func NewApp() (*App, error) {
 	dir, err := appdir.Dir()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("locate data directory: %w", err)
 	}
-	secretStore, err := secrets.Open(dir)
+	secs, err := secrets.Open(dir)
 	if err != nil {
-		return nil, fmt.Errorf("open secret store: %w", err)
+		return nil, fmt.Errorf("open credential store: %w", err)
 	}
-	hostStore, err := hoststore.Open(dir, secretStore)
+	hosts, err := hoststore.Open(dir, secs)
 	if err != nil {
-		return nil, fmt.Errorf("open host list: %w", err)
+		return nil, fmt.Errorf("open host store: %w", err)
 	}
-	return &App{
-		mgr:     sshx.NewManager(sshx.NewHostKeyStore(hostKeysPath())),
-		hosts:   hostStore,
-		secrets: secretStore,
-		started: time.Now(),
-	}, nil
-}
+	hostKeys := sshx.NewHostKeyStore(filepath.Join(dir, "known_hosts.json"))
+	mgr := sshx.NewManager(hostKeys)
 
-func hostKeysPath() string {
-	path, err := appdir.Path("known_hosts.json")
+	prefs := settings.Load(filepath.Join(dir, "settings.json"))
+	mgr.SetIdleTimeout(sshx.IdleTimeout(prefs.IdleTimeoutHours))
+	logDir, err := appdir.Path("logs")
 	if err != nil {
-		// appdir already reported the real problem; fall back to a name that
-		// makes the failure obvious in a host-key error message.
-		return "known_hosts.json"
+		return nil, fmt.Errorf("locate log directory: %w", err)
 	}
-	return path
-}
+	downloadDir, err := appdir.Path("downloads")
+	if err != nil {
+		return nil, fmt.Errorf("locate download directory: %w", err)
+	}
+	if err := os.MkdirAll(downloadDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create download directory: %w", err)
+	}
+	if _, err := mgr.ConfigureSessionLogging(prefs.SessionLogging, logDir); err != nil {
+		log.Printf("goterm: session logging: %v", err)
+	}
 
-// startup is the application lifecycle hook; Wails calls it through
-// ServiceStartup once the app (and its event manager) exists.
-func (a *App) startup(ctx context.Context) {
-	a.ctx = ctx
-	a.setEmitter(func(topic string, payload any) {
-		// Emitting needs the running application; during teardown it may already
-		// be gone, and losing a final "closed" event is better than a panic.
-		if app := application.Get(); app != nil {
-			app.Event.Emit(topic, payload)
+	a := &App{
+		mgr:             mgr,
+		hosts:           hosts,
+		secs:            secs,
+		dir:             dir,
+		prefs:           prefs,
+		prefOK:          true,
+		openGroups:      map[string]bool{},
+		dragFrom:        -1,
+		pendingMoveFrom: -1,
+		pendingMoveTo:   -1,
+		logDir:          logDir,
+		downloadDir:     downloadDir,
+		configPath:      filepath.Join(dir, "settings.json"),
+	}
+	if list, err := fonts.List(); err == nil {
+		for _, f := range fonts.Monospace(list) {
+			a.fonts = append(a.fonts, f.Name)
+		}
+	}
+	mgr.SetEmitter(func(topic string, payload any) {
+		switch topic {
+		case sshx.EventClosed:
+			ev, ok := payload.(sshx.ClosedEvent)
+			if !ok {
+				return
+			}
+			a.post(func() { a.sessionClosed(ev) })
+		case sshx.EventNotice:
+			ev, ok := payload.(sshx.NoticeEvent)
+			if !ok {
+				return
+			}
+			a.post(func() {
+				if ev.Level == "warn" || ev.Level == "error" {
+					a.status = ev.Message
+					if a.win != nil {
+						a.win.Invalidate()
+					}
+				}
+			})
+		case sshx.EventSFTPProgress:
+			ev, ok := payload.(sshx.SFTPProgressEvent)
+			if !ok {
+				return
+			}
+			a.post(func() {
+				for _, t := range a.tabs {
+					if t.Sess == nil || t.Sess.ID() != ev.SessionID || t.SFTP == nil {
+						continue
+					}
+					t.SFTP.Progress = sftpProgressText(ev)
+				}
+				if a.win != nil {
+					a.win.Invalidate()
+				}
+			})
 		}
 	})
-	a.mgr.SetEmitter(a.emitFn())
+	return a, nil
 }
 
-// ServiceStartup implements Wails v3's service lifecycle.
-func (a *App) ServiceStartup(ctx context.Context, _ application.ServiceOptions) error {
-	a.startup(ctx)
-	return nil
-}
-
-// ServiceShutdown implements Wails v3's service lifecycle: no remote shell
-// outlives the window.
-func (a *App) ServiceShutdown() error {
-	a.shutdown(nil)
-	return nil
-}
-
-// setEmitter installs the event sink. Tests replace it with a recorder, which
-// is how the whole SSH path is exercised without opening a window.
-func (a *App) setEmitter(emit sshx.EmitFunc) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.emit = emit
-}
-
-func (a *App) emitFn() sshx.EmitFunc {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.emit == nil {
-		return func(string, any) {}
-	}
-	return a.emit
-}
-
-// shutdown is Wails' OnShutdown hook: no remote shell outlives the window.
-func (a *App) shutdown(_ context.Context) {
-	a.mgr.CloseAll()
-}
-
-func (a *App) notify(id string) {
-	if id == "" {
+// post runs fn on the UI thread when there is a window, and directly before
+// one exists (which is only during start-up).
+func (a *App) post(fn func()) {
+	if a.win == nil {
+		fn()
 		return
 	}
-	a.hosts.Touch(id)
+	a.win.Update(fn)
 }
 
-// --- sessions -------------------------------------------------------------
-
-// Connect opens an ad-hoc session from a config typed into the connect dialog.
-// Saved hosts should use ConnectHost so their password stays in Go.
-func (a *App) Connect(cfg sshx.Config) (string, error) {
-	sess, err := a.mgr.Connect(cfg)
-	if err != nil {
-		// The error is returned to the caller, which is the single place that
-		// decides how to show it. Emitting a notice here as well double-toasted
-		// every failed connection.
-		return "", err
-	}
-	return sess.ID(), nil
-}
-
-// ConnectAnswers carries what the connect-time prompts collected for one
-// attempt. Every field is optional — empty means "use what is stored" — and none
-// of it is persisted by ConnectHost: a prompt's "remember" tick is a separate
-// SetHostSecret call, which is the only way a secret reaches the key ring.
-//
-// It is a struct rather than five positional strings on purpose. Three of these
-// are interchangeable passphrases for different machines, and the project has
-// already shipped a bug where a target's answer went to the jump host's slot.
-type ConnectAnswers struct {
-	// Passphrase unlocks the target's encrypted private key.
-	Passphrase string `json:"passphrase"`
-	// ProxyPassphrase unlocks the jump host's key.
-	ProxyPassphrase string `json:"proxyPassphrase"`
-	// Password is typed at the prompt for a host whose password was never stored.
-	Password string `json:"password"`
-	// ProxyPassword is the same for the jump host's password.
-	ProxyPassword string `json:"proxyPassword"`
-	// TwoFactorCode is appended to the password, as these servers expect.
-	TwoFactorCode string `json:"twoFactorCode"`
-}
-
-// ConnectHost connects to a saved host, resolving its secret inside Go so the
-// password never crosses into JavaScript — except an answer the user typed into
-// a prompt just now, which is used for this attempt only and forgotten.
-func (a *App) ConnectHost(hostID string, cols, rows int, answers ConnectAnswers) (string, error) {
-	cfg, err := a.hosts.SSHConfigWith(hostID, cols, rows, hoststore.ConnectOverrides{
-		Passphrase:      answers.Passphrase,
-		ProxyPassphrase: answers.ProxyPassphrase,
-		Password:        answers.Password,
-		ProxyPassword:   answers.ProxyPassword,
-		TwoFactorCode:   answers.TwoFactorCode,
+// Open creates the main window and the menu.
+func (a *App) Open() {
+	a.applyAppearance()
+	a.win = mygo.NewWindow(mygo.WindowOptions{
+		Title:     "GoTerm",
+		Width:     1200,
+		Height:    800,
+		MinWidth:  760,
+		MinHeight: 480,
+		StateKey:  "main",
+		Content:   ui.View(a.view),
 	})
-	if err != nil {
-		return "", err
-	}
-	sess, err := a.mgr.Connect(cfg)
-	if err != nil {
-		return "", err
-	}
-	a.notify(hostID)
-	return sess.ID(), nil
-}
+	a.installMenu()
+	a.win.OnClosed(func() { a.Close() })
 
-// SetIdleTimeout sets how long a connection may go without typed input before
-// GoTerm stops sending keepalive signals, in hours, and returns the value
-// actually in force. Go clamps whatever it is told to 1–744 and treats 0 as
-// "the default 24", so neither a stale UI nor a hand-edited settings file can
-// ask for an endless session.
-//
-// The window is measured from the last keystroke, not from when the connection
-// was made: a session that is being used is never touched by this, and a
-// session that is not is left to the server's own idle policy once the window
-// runs out. It reaches sessions that are already open, not only the next one.
-func (a *App) SetIdleTimeout(hours int) int {
-	d := sshx.IdleTimeout(hours)
-	a.mgr.SetIdleTimeout(d)
-	return int(d / time.Hour)
-}
-
-// SendInput forwards typed text (UTF-8) to a session.
-func (a *App) SendInput(sessionID, data string) error {
-	return a.mgr.Write(sessionID, []byte(data))
-}
-
-// SendInputB64 forwards raw bytes. trzsz builds control strings whose characters
-// are byte values, and JSON would re-encode those as UTF-8, so binary input
-// travels base64-encoded. This is the path the frontend uses for everything.
-func (a *App) SendInputB64(sessionID, dataB64 string) error {
-	raw, err := base64.StdEncoding.DecodeString(dataB64)
-	if err != nil {
-		return fmt.Errorf("input is not valid base64: %w", err)
-	}
-	return a.mgr.Write(sessionID, raw)
-}
-
-// ResizePTY tells the remote PTY the terminal's new size.
-func (a *App) ResizePTY(sessionID string, cols, rows int) error {
-	return a.mgr.Resize(sessionID, cols, rows)
-}
-
-// SetOutputFlow pauses or resumes a session's output for the UI's flow control.
-// The terminal asks for a pause when it is behind and for a resume when it has
-// caught up; pausing blocks the SSH reader instead of growing a queue in the
-// webview, which is what kept a firehose of output from costing a gigabyte of
-// memory.
-func (a *App) SetOutputFlow(sessionID string, paused bool) error {
-	return a.mgr.SetOutputFlow(sessionID, paused)
-}
-
-// SetSessionLogging turns recording of session output on or off, and reports
-// where the files go. It applies to sessions that are already open, so the
-// switch means what it says.
-//
-// The directory is resolved here rather than in internal/sshx: where state
-// lives is an application decision (the same folder hosts.json and the key
-// ring use), and the SSH package has no business knowing about it.
-func (a *App) SetSessionLogging(enabled bool) (sshx.SessionLogInfo, error) {
-	dir, err := appdir.Path("logs")
-	if err != nil {
-		return sshx.SessionLogInfo{}, err
-	}
-	return a.mgr.ConfigureSessionLogging(enabled, dir)
-}
-
-// CloseSession ends one session.
-func (a *App) CloseSession(sessionID string) error {
-	return a.mgr.Close(sessionID)
-}
-
-// DuplicateSession opens another terminal on a session's existing SSH
-// connection. Nothing is re-authenticated: the new tab is a second channel on
-// the same connection, which is what makes it instant and what makes it safe to
-// close either tab first.
-func (a *App) DuplicateSession(sessionID string) (string, error) {
-	sess, err := a.mgr.Duplicate(sessionID)
-	if err != nil {
-		return "", err
-	}
-	return sess.ID(), nil
-}
-
-// ListSessions reports live sessions for the status bar and tab restore.
-func (a *App) ListSessions() []sshx.SessionInfo {
-	return a.mgr.Sessions()
-}
-
-// --- sftp ------------------------------------------------------------------
-
-// SFTPList lists a remote directory for the file panel. An empty dir means the
-// login directory.
-func (a *App) SFTPList(sessionID, dir string) (sftpx.Listing, error) {
-	return a.mgr.SFTPList(sessionID, dir)
-}
-
-// SFTPMkdir creates a remote directory.
-func (a *App) SFTPMkdir(sessionID, dir string) error {
-	return a.mgr.SFTPMkdir(sessionID, dir)
-}
-
-// SFTPRemove deletes a remote file, or an empty directory when isDir is true.
-func (a *App) SFTPRemove(sessionID, target string, isDir bool) error {
-	return a.mgr.SFTPRemove(sessionID, target, isDir)
-}
-
-// SFTPRename moves or renames one remote entry.
-func (a *App) SFTPRename(sessionID, oldPath, newPath string) error {
-	return a.mgr.SFTPRename(sessionID, oldPath, newPath)
-}
-
-// SFTPUpload asks for files with the native picker and uploads them into
-// remoteDir. An empty result means the user cancelled.
-//
-// The picker and the upload happen in one call on purpose: the local paths
-// never have to travel through the webview, and there is no window in which a
-// half-chosen file list could be replayed.
-func (a *App) SFTPUpload(sessionID, remoteDir string) ([]string, error) {
-	dialogs, err := a.dialogs()
-	if err != nil {
-		return nil, err
-	}
-	paths, err := dialogs.OpenFile().
-		SetTitle("Upload to " + remoteDir).
-		CanChooseFiles(true).
-		CanChooseDirectories(false).
-		CanCreateDirectories(true).
-		PromptForMultipleSelection()
-	if err != nil {
-		return nil, err
-	}
-	if len(paths) == 0 {
-		return nil, nil
-	}
-	return a.mgr.SFTPUpload(sessionID, paths, remoteDir)
-}
-
-// SFTPDownload asks where to save a remote file and fetches it. An empty
-// result means the user cancelled.
-func (a *App) SFTPDownload(sessionID, remotePath string) (string, error) {
-	dialogs, err := a.dialogs()
-	if err != nil {
-		return "", err
-	}
-	name := path.Base(remotePath)
-	target, err := dialogs.SaveFile().
-		SetFilename(name).
-		SetMessage("Save " + name + " from the remote server").
-		CanCreateDirectories(true).
-		PromptForSingleSelection()
-	if err != nil {
-		return "", err
-	}
-	if target == "" {
-		return "", nil
-	}
-	if err := a.mgr.SFTPDownload(sessionID, remotePath, target); err != nil {
-		return "", err
-	}
-	return target, nil
-}
-
-// --- hosts ----------------------------------------------------------------
-
-// ListHosts returns saved servers. Secrets are not part of Host; the list only
-// says whether one is stored.
-func (a *App) ListHosts() []hoststore.Host {
-	return a.hosts.List()
-}
-
-// Groups lists the group labels in use.
-func (a *App) Groups() []string {
-	return a.hosts.Groups()
-}
-
-// SaveHost creates or updates a saved host.
-func (a *App) SaveHost(host hoststore.Host) (hoststore.Host, error) {
-	saved, err := a.hosts.Save(host)
-	if err != nil {
-		return hoststore.Host{}, err
-	}
-	return saved, nil
-}
-
-// SetHostSecret stores a password or key passphrase ("" removes it).
-func (a *App) SetHostSecret(hostID, secret string) error {
-	return a.hosts.SetSecret(hostID, secret)
-}
-
-// SetHostProxySecret stores the jump host's password or key passphrase.
-func (a *App) SetHostProxySecret(hostID, secret string) error {
-	return a.hosts.SetProxySecret(hostID, secret)
-}
-
-// DeleteHost removes a saved host and its secret.
-func (a *App) DeleteHost(hostID string) error {
-	return a.hosts.Delete(hostID)
-}
-
-// --- host list portability ------------------------------------------------
-
-// HostExport reports a finished export. Path is empty when the user cancelled
-// the save dialog, which is not an error.
-type HostExport struct {
-	Path    string `json:"path"`
-	Hosts   int    `json:"hosts"`
-	Secrets int    `json:"secrets"`
-	// Missing counts hosts whose secret the key ring would not hand over, so a
-	// partial export can never pass for a complete one.
-	Missing int `json:"missing"`
-}
-
-// HostImport reports what an import did to the local list.
-type HostImport struct {
-	Path    string `json:"path"`
-	Added   int    `json:"added"`
-	Updated int    `json:"updated"`
-	Skipped int    `json:"skipped"`
-	Secrets int    `json:"secrets"`
-}
-
-// maxImportFile bounds what one import may read from disk.
-const maxImportFile = 8 << 20
-
-// ExportHosts writes every saved host — with its secret re-encrypted under
-// passphrase — to the file chosen in the native save dialog.
-//
-// The result is one opaque file: hosts plus passwords, sealed with a key derived
-// from the passphrase the user just typed. Nothing but GoTerm can read it back,
-// and without that passphrase neither can anyone else.
-func (a *App) ExportHosts(passphrase string) (HostExport, error) {
-	dialogs, err := a.dialogs()
-	if err != nil {
-		return HostExport{}, err
-	}
-	if passphrase == "" {
-		return HostExport{}, errors.New("choose an export passphrase first — it is the only thing that unlocks the file")
-	}
-
-	// SetOptions is the only way to set a save dialog's title in this Wails
-	// version, and it returns nothing, so the builder chain breaks in two here.
-	saveDialog := dialogs.SaveFile()
-	saveDialog.SetOptions(&application.SaveFileDialogOptions{
-		Title:                "Export hosts",
-		Message:              "Hosts and their encrypted secrets will be written here.",
-		Filename:             suggestedExportName(time.Now()),
-		CanCreateDirectories: true,
-	})
-	path, err := saveDialog.AddFilter("GoTerm hosts", "*.json").PromptForSingleSelection()
-	if err != nil {
-		return HostExport{}, err
-	}
-	if path == "" {
-		return HostExport{}, nil // cancelled
-	}
-	return a.exportTo(path, passphrase)
-}
-
-// exportTo is ExportHosts without the dialog. The dialog is a thin shell around
-// this on purpose: everything that can be wrong — what goes into the bundle,
-// what a failed key-ring read does, whether the file is sealed before it is
-// written — is exercised by app_test.go without a window.
-func (a *App) exportTo(path, passphrase string) (HostExport, error) {
-	if passphrase == "" {
-		return HostExport{}, errors.New("choose an export passphrase first — it is the only thing that unlocks the file")
-	}
-
-	var bundle hostport.Bundle
-	missing := 0
-	secrets := map[string]string{}
-	proxySecrets := map[string]string{}
-	for _, host := range a.hosts.List() {
-		if host.HasSecret {
-			if secret, err := a.hosts.Secret(host.ID); err == nil && secret != "" {
-				secrets[host.ID] = secret
-			} else {
-				missing++
-			}
+	if hosts := a.hosts.List(); len(hosts) > 0 && a.selectedHost == "" {
+		if h, ok := a.hosts.Get(a.prefs.LastHostID); ok {
+			a.selectedHost = h.ID
 		}
-		if host.HasProxySecret {
-			if secret, err := a.hosts.ProxySecret(host.ID); err == nil && secret != "" {
-				proxySecrets[host.ID] = secret
-			} else {
-				missing++
-			}
-		}
-		// These two describe *this* machine's key ring, not the host.
-		host.HasSecret, host.HasProxySecret = false, false
-		bundle.Hosts = append(bundle.Hosts, host)
 	}
-	bundle.Secrets = secrets
-	bundle.ProxySecrets = proxySecrets
-
-	raw, err := hostport.Seal(bundle, passphrase)
-	if err != nil {
-		return HostExport{}, err
+	if a.startHost != "" {
+		a.connectHost(a.startHost)
 	}
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
-		return HostExport{}, fmt.Errorf("write %s: %w", path, err)
-	}
-	return HostExport{Path: path, Hosts: len(bundle.Hosts), Secrets: len(secrets), Missing: missing}, nil
 }
 
-// ImportHosts merges a file written by ExportHosts back in: a host that is
-// already here is updated, an unknown one is added. Cancelled gives a zero report.
-func (a *App) ImportHosts(passphrase string) (HostImport, error) {
-	dialogs, err := a.dialogs()
-	if err != nil {
-		return HostImport{}, err
+// Close releases every session and persists what changed.
+func (a *App) Close() {
+	if a.mgr != nil {
+		// CloseAll ends every session, which announces itself to the window;
+		// doing that on its own goroutine keeps quit from waiting on a frame.
+		go a.mgr.CloseAll()
 	}
-
-	path, err := dialogs.OpenFile().
-		SetTitle("Import hosts").
-		AddFilter("GoTerm hosts", "*.json").
-		AddFilter("All files", "*").
-		PromptForSingleSelection()
-	if err != nil {
-		return HostImport{}, err
-	}
-	if path == "" {
-		return HostImport{}, nil // cancelled
-	}
-	return a.importFrom(path, passphrase)
+	a.savePrefs()
 }
 
-// importFrom is ImportHosts without the dialog — see exportTo.
-func (a *App) importFrom(path, passphrase string) (HostImport, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return HostImport{}, fmt.Errorf("read %s: %w", path, err)
+func (a *App) savePrefs() {
+	a.prefs.LastHostID = a.selectedHost
+	if err := a.prefs.Save(a.configPath); err != nil {
+		log.Printf("goterm: save settings: %v", err)
 	}
-	if len(raw) > maxImportFile {
-		return HostImport{}, fmt.Errorf("%s is %s — that is not a host list", path, humanBytes(len(raw)))
-	}
-	bundle, err := hostport.Unseal(raw, passphrase)
-	if err != nil {
-		return HostImport{}, err
-	}
-
-	sum := a.hosts.Import(bundle.Hosts, bundle.Secrets, bundle.ProxySecrets)
-	return HostImport{Path: path, Added: sum.Added, Updated: sum.Updated, Skipped: sum.Skipped, Secrets: sum.Secrets}, nil
 }
 
-// suggestedExportName is a file name that says what it is and when it was cut.
-func suggestedExportName(now time.Time) string {
-	return fmt.Sprintf("goterm-hosts-%s.json", now.Format("2006-01-02"))
-}
-
-// humanBytes is for error messages, not for the terminal's byte counters.
-func humanBytes(n int) string {
-	switch {
-	case n >= 1<<20:
-		return fmt.Sprintf("%.1f MiB", float64(n)/float64(1<<20))
-	case n >= 1<<10:
-		return fmt.Sprintf("%.0f KiB", float64(n)/float64(1<<10))
+// applyAppearance makes mygo and every open terminal follow the theme setting.
+func (a *App) applyAppearance() {
+	switch a.prefs.Theme {
+	case "light":
+		mygo.Theme.SetSource(mygo.ThemeLight)
+	case "dark":
+		mygo.Theme.SetSource(mygo.ThemeDark)
 	default:
-		return fmt.Sprintf("%d bytes", n)
+		mygo.Theme.SetSource(mygo.ThemeSystem)
 	}
 }
 
-// --- trust ----------------------------------------------------------------
-
-// KnownHosts lists pinned server fingerprints.
-func (a *App) KnownHosts() []sshx.HostKeyRecord {
-	return a.mgr.HostKeys().List()
+func (a *App) terminalTheme() *terminal.Theme {
+	if a.prefs.Theme == "light" {
+		return terminal.LightTheme()
+	}
+	if a.prefs.Theme == "dark" {
+		return terminal.DarkTheme()
+	}
+	return nil // follows the window
 }
 
-// ForgetHostKey drops a pin, for when a server's key genuinely changed.
-func (a *App) ForgetHostKey(address string) bool {
-	return a.mgr.HostKeys().Forget(address)
-}
-
-// --- dialogs --------------------------------------------------------------
-
-// dialogs returns the native dialog manager, or an error when the window is not
-// up yet — which is exactly the state a unit test runs in.
-func (a *App) dialogs() (*application.DialogManager, error) {
-	if a.ctx == nil {
-		return nil, errors.New("window is not ready yet")
-	}
-	app := application.Get()
-	if app == nil {
-		return nil, errors.New("window is not ready yet")
-	}
-	return app.Dialog, nil
-}
-
-// PickKeyFile opens the native file picker for a private key. Wails v3 keeps
-// dialogs on the application object, so the frontend asks Go instead of poking
-// at window.runtime and hoping.
-func (a *App) PickKeyFile() (string, error) {
-	dialogs, err := a.dialogs()
-	if err != nil {
-		return "", err
-	}
-	path, err := dialogs.OpenFile().
-		SetTitle("Choose a private key").
-		AddFilter("Private keys", "id_*;*.pem;*.key;*.ppk").
-		AddFilter("All files", "*").
-		PromptForSingleSelection()
-	if err != nil {
-		return "", err
-	}
-	return path, nil
-}
-
-// OpenURL hands a link to the real browser, which is what a clicked URL in
-// terminal output should do.
-func (a *App) OpenURL(url string) error {
-	if a.ctx == nil {
-		return errors.New("window is not ready yet")
-	}
-	if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
-		return fmt.Errorf("refusing to open %q: only http(s) links are allowed", url)
-	}
-	app := application.Get()
-	if app == nil {
-		return errors.New("window is not ready yet")
-	}
-	return app.Browser.OpenURL(url)
-}
-
-// --- where state lives ----------------------------------------------------
-
-// StorageInfo is the answer to “where does GoTerm keep its files, and did I
-// change that?”. Dir is what this process uses right now; PendingDir is what the
-// next start will use. They differ until a restart, which is the honest state
-// rather than pretending a move happened instantly — open files and the secret
-// ring were resolved at startup.
-type StorageInfo struct {
-	Dir            string `json:"dir"`
-	DefaultDir     string `json:"defaultDir"`
-	ConfiguredDir  string `json:"configuredDir"`
-	PendingDir     string `json:"pendingDir"`
-	EnvDir         string `json:"envDir"`
-	EnvOverride    bool   `json:"envOverride"`
-	RestartPending bool   `json:"restartPending"`
-}
-
-// Storage backs the Settings → Storage section and the self-test report.
-func (a *App) Storage() StorageInfo {
-	current, _ := appdir.Dir()
-	dflt, _ := appdir.DefaultDir()
-	configured, _ := appdir.Configured()
-	pending, err := appdir.PendingDir()
-	if err != nil || pending == "" {
-		pending = current
-	}
-	env := appdir.EnvDir()
-	return StorageInfo{
-		Dir:            current,
-		DefaultDir:     dflt,
-		ConfiguredDir:  configured,
-		PendingDir:     pending,
-		EnvDir:         env,
-		EnvOverride:    env != "",
-		RestartPending: !appdir.Same(pending, current),
-	}
-}
-
-// SetStorageDir remembers where the next start should keep state. An empty
-// string returns to the default folder. It writes nothing when GOTERM_DIR is
-// set, because that variable wins and the setting would silently do nothing.
-func (a *App) SetStorageDir(dir string) (StorageInfo, error) {
-	if err := appdir.SetDir(dir); err != nil {
-		return a.Storage(), err
-	}
-	return a.Storage(), nil
-}
-
-// PickStorageDir opens the native folder picker. Empty means the user cancelled;
-// the folder is not adopted until SetStorageDir is called with it.
-func (a *App) PickStorageDir() (string, error) {
-	dialogs, err := a.dialogs()
-	if err != nil {
-		return "", err
-	}
-	dir, err := dialogs.OpenFile().
-		SetTitle("Choose where GoTerm keeps its files").
-		CanChooseFiles(false).
-		CanChooseDirectories(true).
-		CanCreateDirectories(true).
-		PromptForSingleSelection()
-	if err != nil {
-		return "", err
-	}
-	return dir, nil
-}
-
-// --- app info -------------------------------------------------------------
-
-// Fonts lists the monospace families installed on this machine, for the
-// settings screen. A proportional face cannot render a terminal grid, so the
-// filtering happens here instead of trusting whatever the form sends back.
-func (a *App) Fonts() []fonts.Family {
-	list, err := fonts.List()
-	if err != nil {
-		// No list is a bad day, not a broken app: the terminal keeps its
-		// built-in stack and the settings screen shows that.
+// current returns the active tab, or nil.
+func (a *App) current() *Tab {
+	if a.active < 0 || a.active >= len(a.tabs) {
 		return nil
 	}
-	return fonts.Monospace(list)
+	return a.tabs[a.active]
 }
 
-// attachWindow hands the App the window it may repaint. main calls it right
-// after creating the window and before Run.
-func (a *App) attachWindow(win *application.WebviewWindow) {
-	a.mu.Lock()
-	a.win = win
-	a.mu.Unlock()
-}
-
-// SetWindowTheme paints the native title bar and window border in the app's
-// theme, so a dark GoTerm on a light-mode Windows is not sitting under a white
-// caption and a white hairline.
-//
-// The frontend calls this at startup and on every theme switch: the theme lives
-// in localStorage, which Go cannot read, so the window follows the UI rather
-// than the other way round. It is a no-op where the platform draws its own
-// decorations (see internal/wintheme).
-func (a *App) SetWindowTheme(dark bool) error {
-	a.mu.Lock()
-	win := a.win
-	a.mu.Unlock()
-	if win == nil {
-		return nil // headless: tests, and the server build
+// newTab appends an empty tab and focuses it.
+func (a *App) newTab(title, hostID string) *Tab {
+	t := &Tab{
+		ID:      fmt.Sprintf("tab-%d", time.Now().UnixNano()),
+		HostID:  hostID,
+		Title:   title,
+		Status:  StatusConnecting,
+		Started: time.Now(),
 	}
-	hwnd := uintptr(win.NativeWindow())
-	if hwnd == 0 {
-		return nil
+	a.tabs = append(a.tabs, t)
+	a.active = len(a.tabs) - 1
+	return t
+}
+
+// selectTab switches tabs and gives the terminal the keyboard. This is the
+// whole of requirement 1: the request waits while the pane is hidden and
+// lands the moment it is shown, so the user can type without clicking again.
+func (a *App) selectTab(i int) {
+	if i < 0 || i >= len(a.tabs) || i == a.active {
+		return
 	}
-	return wintheme.Apply(hwnd, dark)
-}
-
-// AppInfo describes where state lives and how it is protected. The UI prints
-// secretBackend verbatim instead of claiming key-ring protection it may not
-// have.
-type AppInfo struct {
-	Version       string `json:"version"`
-	GoVersion     string `json:"goVersion"`
-	Platform      string `json:"platform"`
-	ConfigDir     string `json:"configDir"`
-	SecretBackend string `json:"secretBackend"`
-	SecretSecure  bool   `json:"secretSecure"`
-	OpenSessions  int    `json:"openSessions"`
-	UptimeSeconds int    `json:"uptimeSeconds"`
-}
-
-// Info backs the status bar and the About popover.
-func (a *App) Info() AppInfo {
-	dir, _ := appdir.Dir()
-	return AppInfo{
-		Version:       Version,
-		GoVersion:     runtime.Version(),
-		Platform:      runtime.GOOS + "/" + runtime.GOARCH,
-		ConfigDir:     dir,
-		SecretBackend: string(a.secrets.Backend()),
-		SecretSecure:  a.secrets.Secure(),
-		OpenSessions:  a.mgr.Count(),
-		UptimeSeconds: int(time.Since(a.started).Seconds()),
+	a.active = i
+	if t := a.current(); t != nil {
+		t.Focus.Focus()
 	}
 }
 
-// Ping is the Stage-1 IPC smoke test, kept because it stays useful: it proves
-// both directions of the bridge in one click (frontend → Go returns a value,
-// Go → frontend receives an event).
-func (a *App) Ping() string {
-	a.mu.Lock()
-	a.pings++
-	count := a.pings
-	a.mu.Unlock()
-
-	stamp := time.Now().Format("15:04:05.000")
-	message := fmt.Sprintf("Go #%d at %s (%d sessions open)", count, stamp, a.mgr.Count())
-	a.emitFn()(sshx.EventNotice, sshx.NoticeEvent{Level: "info", Message: "backend " + message})
-	return message
+// moveTab reorders the tab bar, keeping the same tab active and focused.
+func (a *App) moveTab(from, to int) {
+	if from < 0 || to < 0 || from >= len(a.tabs) || to >= len(a.tabs) || from == to {
+		return
+	}
+	activeTab := a.current()
+	t := a.tabs[from]
+	a.tabs = append(a.tabs[:from], a.tabs[from+1:]...)
+	tail := append([]*Tab{t}, a.tabs[to:]...)
+	a.tabs = append(a.tabs[:to], tail...)
+	if activeTab != nil {
+		for i, candidate := range a.tabs {
+			if candidate == activeTab {
+				a.active = i
+				break
+			}
+		}
+	}
+	if a.win != nil {
+		a.win.Invalidate()
+	}
 }
 
-// DebugSelfTest drives the SSH stack against the bundled test server and
-// reports what happened, so a broken install can be diagnosed from the UI
-// without a terminal. It never touches the user's saved hosts.
-func (a *App) DebugSelfTest() string {
-	report, err := runSelfTest(a.emitFn())
+// focusTerminal brings the keyboard back to the active terminal, unless a
+// dialog or a text field owns it.
+func (a *App) focusTerminal() {
+	if t := a.current(); t != nil && t.Term != nil {
+		t.Focus.Focus()
+	}
+}
+
+// closeTab closes one terminal and its session.
+func (a *App) closeTab(i int) {
+	if i < 0 || i >= len(a.tabs) {
+		return
+	}
+	t := a.tabs[i]
+	a.tabs = append(a.tabs[:i], a.tabs[i+1:]...)
+	if a.active >= len(a.tabs) {
+		a.active = len(a.tabs) - 1
+	}
+	a.active = max(a.active, 0)
+	go func() {
+		if t.Term != nil {
+			_ = t.Term.Close()
+		}
+		if t.Sess != nil {
+			_ = t.Sess.Close()
+		}
+	}()
+	a.focusTerminal()
+}
+
+// sessionClosed updates the tab when the remote side hangs up.
+func (a *App) sessionClosed(ev sshx.ClosedEvent) {
+	for _, t := range a.tabs {
+		if t.Sess != nil && t.Sess.ID() == ev.SessionID {
+			t.Status = StatusClosed
+			t.Err = ev.Reason
+			break
+		}
+	}
+	if a.win != nil {
+		a.win.Invalidate()
+	}
+}
+
+// connectHost dials a saved host into a new tab.
+func (a *App) connectHost(hostID string) {
+	h, ok := a.hosts.Get(hostID)
+	if !ok {
+		// --connect accepts a name too, as a person types it.
+		for _, candidate := range a.hosts.List() {
+			if strings.EqualFold(candidate.Name, hostID) {
+				h, ok = candidate, true
+				break
+			}
+		}
+	}
+	if !ok {
+		a.status = "That host is gone."
+		return
+	}
+	hostID = h.ID
+	a.selectedHost = hostID
+	a.savePrefs()
+	a.connect(hostID, h.Name, hoststore.ConnectOverrides{}, nil)
+}
+
+func (a *App) connect(hostID, title string, ov hoststore.ConnectOverrides, existing *Tab) {
+	t := existing
+	if t == nil {
+		t = a.newTab(title, hostID)
+	}
+	t.Status = StatusConnecting
+	t.Err = ""
+	t.OV = ov
+	if h, ok := a.hosts.Get(hostID); ok && h.TwoFactor && t.OV.TwoFactorCode == "" {
+		a.askOTP(t, h)
+		return
+	}
+	go a.dial(t)
+}
+
+// dial opens the SSH session and, on success, the terminal. Errors that mean
+// "the UI must ask something" turn into native prompts and a retry; everything
+// else becomes a tab status the user can act on.
+func (a *App) dial(t *Tab) {
+	cfg, err := a.hosts.SSHConfigWith(t.HostID, 100, 30, t.OV)
 	if err != nil {
-		return "FAIL: " + err.Error()
+		a.connectError(t, err)
+		return
 	}
-	return report
+	t.Cfg = cfg
+	sess, err := a.mgr.Connect(cfg)
+	if err != nil {
+		a.connectError(t, err)
+		return
+	}
+	a.post(func() {
+		t.Sess = sess
+		t.Status = StatusConnected
+		t.Via = viaText(cfg)
+		if info := sess.Info(); info.LogPath != "" {
+			t.LogPath = info.LogPath
+		}
+		a.startTerminal(t)
+	})
 }
 
-// EnvDirOverride documents the GOTERM_DIR escape hatch for tests and portable
-// installs; the UI shows it in the About popover.
-func envDirOverride() string { return os.Getenv("GOTERM_DIR") }
+// connectError classifies a failure and, where the user can fix it, asks.
+func (a *App) connectError(t *Tab, err error) {
+	msg := err.Error()
+	proxy := strings.Contains(msg, "(proxy)")
+	switch {
+	case errors.Is(err, hoststore.ErrPasswordRequired):
+		a.askSecret(t, promptPassword, proxy)
+	case errors.Is(err, sshx.ErrPassphraseRequired):
+		a.askSecret(t, promptPassphrase, proxy)
+	case isAuthFailure(err) && a.hostUsesPassword(t):
+		// A saved password can be wrong, and the SSH stack has no sentinel for
+		// that. Ask again, but stop after three refusals instead of looping.
+		t.AuthFailures++
+		if t.AuthFailures <= 3 {
+			a.askSecret(t, promptPassword, proxy)
+			if a.prompt != nil {
+				a.prompt.Err = authFailureText(t.AuthFailures)
+			}
+			return
+		}
+		a.post(func() {
+			t.Status = StatusFailed
+			t.Err = friendlyError(err)
+			a.status = friendlyError(err)
+			if a.win != nil {
+				a.win.Invalidate()
+			}
+		})
+	default:
+		a.post(func() {
+			t.Status = StatusFailed
+			t.Err = friendlyError(err)
+			a.status = friendlyError(err)
+			if a.win != nil {
+				a.win.Invalidate()
+			}
+		})
+	}
+}
+
+// hostUsesPassword tells whether another password attempt makes sense: a
+// key-only host would just fail the same way.
+func (a *App) hostUsesPassword(t *Tab) bool {
+	h, ok := a.hosts.Get(t.HostID)
+	if !ok {
+		return false
+	}
+	auth := h.AuthType
+	if auth == "" {
+		auth = t.Cfg.AuthType
+	}
+	return auth == "password" || h.TwoFactor
+}
+
+func friendlyError(err error) string {
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "unable to authenticate"):
+		return "Authentication failed. Check the password, the key, or the account."
+	case strings.Contains(msg, "connection refused"):
+		return "The server refused the connection on that port."
+	case strings.Contains(msg, "i/o timeout"), strings.Contains(msg, "deadline exceeded"):
+		return "The connection timed out. Check the address and any jump host."
+	case strings.Contains(msg, "host key"):
+		return msg
+	default:
+		return msg
+	}
+}
+
+// startTerminal builds the emulator for a connected tab. It runs on the main
+// thread because creating a terminal sets up the view-side resources.
+func (a *App) startTerminal(t *Tab) {
+	conn, err := newTransferConn(t.Sess, encode.Parse(a.prefs.Encoding), a.downloadDir)
+	if err != nil {
+		t.Status = StatusFailed
+		t.Err = err.Error()
+		return
+	}
+	conn.SetHighlight(a.prefs.Highlight)
+	term, err := terminal.New(terminal.Options{
+		Conn:       conn,
+		Font:       terminal.Font{Family: a.prefs.FontFamily, Size: float32(a.prefs.FontSize)},
+		Scrollback: a.prefs.ScrollbackMB << 20,
+		Theme:      a.terminalTheme(),
+		CopyOnSelect: func() terminal.CopyOnSelect {
+			if a.prefs.CopyOnSelect {
+				return terminal.CopyOnSelectClipboard
+			}
+			return terminal.CopyOnSelectNone
+		}(),
+		OnTitle: func(title string) {
+			a.post(func() {
+				if title != "" {
+					t.Title = title
+					if a.win != nil {
+						a.win.Invalidate()
+					}
+				}
+			})
+		},
+		OnSearch: func(s terminal.SearchStatus) {
+			a.post(func() {
+				t.SearchTotal = s.Total
+				t.SearchCurrent = s.Selected
+				t.Searching = s.Searching
+				if a.win != nil {
+					a.win.Invalidate()
+				}
+			})
+		},
+	})
+	if err != nil {
+		t.Status = StatusFailed
+		t.Err = "Terminal engine: " + err.Error()
+		return
+	}
+	t.Term = term
+	t.Conn = conn
+	t.Focus.Focus()
+	if a.startFiles {
+		a.startFiles = false
+		a.toggleSFTP(t)
+	}
+	if a.win != nil {
+		a.win.Invalidate()
+	}
+}
+
+// sessionConn adapts a session to terminal.Options.Conn: reads are decoded,
+// writes go to the remote PTY, and Close ends both.
+type sessionConn struct {
+	sess  *sshx.Session
+	out   io.ReadCloser
+	read  io.Reader
+	close sync.Once
+}
+
+func newSessionConn(s *sshx.Session, enc encode.Name) (*sessionConn, error) {
+	out, err := s.AttachOutput()
+	if err != nil {
+		return nil, err
+	}
+	return &sessionConn{sess: s, out: out, read: encode.Reader(out, enc)}, nil
+}
+
+func (c *sessionConn) Read(p []byte) (int, error) { return c.read.Read(p) }
+func (c *sessionConn) Write(p []byte) (int, error) {
+	if err := c.sess.Write(p); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+func (c *sessionConn) Resize(cols, rows int) error { return c.sess.Resize(cols, rows) }
+func (c *sessionConn) Close() error {
+	var err error
+	c.close.Do(func() {
+		_ = c.out.Close()
+		err = c.sess.Close()
+	})
+	return err
+}
+
+func viaText(cfg sshx.Config) string {
+	if cfg.Proxy == nil {
+		return ""
+	}
+	return cfg.Proxy.Target()
+}
+
+// applySettings persists and applies the settings dialog's changes.
+func (a *App) applySettings() {
+	a.prefs.Clamp()
+	a.applyAppearance()
+	a.mgr.SetIdleTimeout(sshx.IdleTimeout(a.prefs.IdleTimeoutHours))
+	if _, err := a.mgr.ConfigureSessionLogging(a.prefs.SessionLogging, a.logDir); err != nil {
+		a.status = "Session logging: " + err.Error()
+	}
+	theme := a.terminalTheme()
+	for _, t := range a.tabs {
+		if t.Term == nil {
+			continue
+		}
+		t.Term.SetFont(terminal.Font{Family: a.prefs.FontFamily, Size: float32(a.prefs.FontSize)})
+		if theme != nil {
+			t.Term.SetTheme(theme, theme)
+		}
+		if a.prefs.CopyOnSelect {
+			t.Term.SetCopyOnSelect(terminal.CopyOnSelectClipboard)
+		} else {
+			t.Term.SetCopyOnSelect(terminal.CopyOnSelectNone)
+		}
+		if sw, ok := t.Conn.(interface{ SetEncoding(encode.Name) }); ok {
+			sw.SetEncoding(encode.Parse(a.prefs.Encoding))
+		}
+		if sw, ok := t.Conn.(interface{ SetHighlight(bool) }); ok {
+			sw.SetHighlight(a.prefs.Highlight)
+		}
+	}
+	if err := a.prefs.Save(a.configPath); err != nil {
+		a.status = "Could not save settings: " + err.Error()
+	}
+	if a.win != nil {
+		a.win.Invalidate()
+	}
+}
+
+// reloadHosts refreshes the sidebar after a host change.
+func (a *App) reloadHosts() {
+	if a.win != nil {
+		a.win.Invalidate()
+	}
+}
+
+// hostGroups returns the host list grouped by the host's Group field, with
+// the empty group last as "Ungrouped".
+func (a *App) hostGroups() map[string][]hoststore.Host {
+	out := map[string][]hoststore.Host{}
+	for _, h := range a.hosts.List() {
+		if a.query != "" {
+			q := strings.ToLower(a.query)
+			if !strings.Contains(strings.ToLower(h.Name), q) &&
+				!strings.Contains(strings.ToLower(h.Host), q) &&
+				!strings.Contains(strings.ToLower(h.User), q) {
+				continue
+			}
+		}
+		out[h.Group] = append(out[h.Group], h)
+	}
+	return out
+}
+
+// platformName is the status bar's platform column.
+func platformName() string {
+	switch runtime.GOOS {
+	case "windows":
+		return "Windows"
+	case "darwin":
+		return "macOS"
+	default:
+		return runtime.GOOS
+	}
+}
+
+// secretBackend names the credential store honestly.
+func (a *App) secretBackend() string {
+	if a.secs == nil {
+		return "none"
+	}
+	return string(a.secs.Backend())
+}
+
+// openURL opens a link with the system's browser.
+func (a *App) openURL(url string) {
+	if err := mygo.Shell.OpenExternal(url); err != nil {
+		a.status = "Could not open link: " + err.Error()
+	}
+}
+
+// exitDir is where the user's data lives, shown in settings.
+func (a *App) exitDir() string { return a.dir }
+
+func (a *App) pickFile(title string, filters []mygo.FileFilter) (string, error) {
+	paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
+		Parent:  a.win,
+		Title:   title,
+		Filters: filters,
+	})
+	if err != nil || len(paths) == 0 {
+		return "", err
+	}
+	return paths[0], nil
+}
+
+func (a *App) saveFile(title, defaultName string, filters []mygo.FileFilter) (string, error) {
+	return mygo.Dialog.Save(mygo.SaveDialogOptions{
+		Parent:      a.win,
+		Title:       title,
+		DefaultPath: defaultName,
+		Filters:     filters,
+	})
+}

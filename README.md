@@ -1,291 +1,81 @@
 # GoTerm
 
-**A desktop SSH terminal written in Go + [Wails v3](https://wails.io) + [xterm.js](https://xtermjs.org):**
-- `rz`/`sz` friendly: transfers use [`trz`/`tsz`](https://github.com/trzsz/trzsz) by default, and the
-  ZMODEM `rz`/`sz` of a plain lrzsz install works too;
-- session keepalive: an SSH session can be kept alive for up to 24 h (configurable);
-- session duplication: need another shell on the same connection? Right-click a tab → `Duplicate`;
-- built-in keyword highlighting for the usual log and command output;
-- full list: [jump to “Features”](#features)
+**A desktop SSH terminal written in pure Go**, with a native user interface drawn by
+[mygo](https://mygo.egoist.dev) and [Ghostty's terminal emulator](https://ghostty.org)
+(libghostty-vt, loaded at runtime).
 
-![GoTerm's welcome screen](docs/screenshot.png)
+No WebView2, no Chromium, no Node, no frontend build: the window, the tabs, the settings and the
+terminal are all Go. That is also why memory stays bounded when a session prints a hundred megabytes
+(4 MB of output queue + an 8 MB scrollback, then SSH backpressure).
 
-**English** · [简体中文](README.zh-CN.md) · [需求台账 / plan](plan.md) · [实现与决策记录](docs/DECISIONS.md)
+**English** · [简体中文](README.zh-CN.md) · [Migration ledger](plan2.md) · [1.x ledger](plan.md)
 
 ---
 
-## 🤖 Continuing this project with an AI
+## Status: 2.0 preview
 
-**This repository is maintained to be handed to an AI and continued.** [`plan.md`](plan.md) is the
-interface: a requirements ledger — what was asked for, where each item stands, which red lines must
-never be crossed, what is left, and how to verify a change.
+This branch (`mygo-native`) replaces the 1.4.0 Wails/Vue/xterm frontend. What works today:
 
-Hand the repository to any AI coding assistant with one line:
+- SSH with password, private key and ssh-agent authentication; jump hosts; 2FA one-time codes;
+  host-key trust on first use (a changed key is refused); keepalive with an idle window.
+- Native host list with groups and search; host editor (host, port, user, auth, jump host, 2FA).
+- Tabs: several sessions, duplicate without a second login, reconnect, close.
+- **Switching tabs puts the keyboard in the terminal** — type immediately, no second click.
+- Real terminal: colours, mouse reporting, scrollback, selection, copy/paste, search
+  (Ctrl+Shift+F), IME composition at the cursor, OSC 52 copy.
+- Session logging to `%APPDATA%\goterm\logs` (off by default, switchable at runtime).
+- **Keyword highlighting** for plain output (`cat`, `tail`, `head`, `ps`, `tee`, batch `top`, logs):
+  severities, addresses, URLs, timestamps, shell/bash vocabulary, syslog and nginx. Full-screen
+  programs (`vim`, `less`, interactive `top`) and lines the program already coloured are left alone.
+  Switchable at runtime.
+- **SFTP file panel** (Ctrl+Shift+E, tab menu, or `--files`): browse, upload, download, make
+  folders, rename, delete, refresh, with progress. Drop files on the terminal to upload them to the
+  panel's directory. It rides the session's own SSH connection, so no second login.
+- **Host import/export**: one sealed file (scrypt + AES-256-GCM) with hosts and their passwords,
+  through native file dialogs.
+- **trzsz and lrzsz**: `trz`/`tsz` and `rz`/`sz` are handled inside the session's byte stream
+  (trzsz-go with ZMODEM enabled), with the progress bar drawn in the terminal; downloads land in
+  `%APPDATA%\goterm\downloads`.
+- Settings in `settings.json`: theme, font family/size, scrollback (MB), logging, remote encoding
+  (UTF-8/GB18030/Big5/Shift_JIS), select-to-copy, idle hours, data directory.
 
-> Read `plan.md` and keep developing from the ledger — fix / improve / add xx, then run the tests and
-> update the ledger.
+Not ported yet (tracked in [plan2.md](plan2.md)): user-defined highlight rules and `.msyn` import,
+the known-hosts review beyond listing/forgetting, and resizing the scrollback of an open terminal
+(reconnect applies it).
 
----
+## Build
 
-## Features
-
-**Terminal**
-- Real SSH: password, private key (with passphrase prompts at connect time), or ssh-agent.
-- Multi-tab, each with its own xterm, SSH session and transfer filter. Drag to reorder.
-  *Duplicate* opens another shell on the **same** connection — no second login.
-- GPU (WebGL) rendering with automatic DOM fallback.
-- `Ctrl+Shift+F` find-in-tab (`@xterm/addon-search`); the count is real buffer matches, not what fits
-  on screen.
-- Copy on select (mouse-release only), and a full-screen program's own *Copy* works too — relayed through OSC 52. Multi-line paste confirmation with an editable box.
-- Remote text encoding: UTF-8 (default) or GB18030 / GBK / GB2312 / Big5 / Shift_JIS, streamed so a
-  multi-byte character split across a 64 KiB chunk is still decoded correctly.
-- Switching tabs puts the keyboard in the terminal: click a tab and type, no second click. The pane's
-  `v-show` swap lands after the focus callback, so the focus is re-asserted one frame later if nothing
-  real took the keyboard.
-- Bounded memory under a firehose: when a tab's terminal falls behind parsing, GoTerm asks Go to stop
-  reading that session (TCP's own window does the rest) instead of letting the difference grow in the
-  webview. Scrollback is configurable (Appearance → Scrollback, default 4 000 lines).
-- Optional **session log**: one file per session, written by Go, byte-for-byte what the terminal
-  received (colour sequences included — what `script(1)` records). Settings → Behaviour → Session log.
-
-**Transfers**
-- Native `trz`/`tsz` with the real trzsz progress bar; drag files onto the terminal to upload.
-- `rz`/`sz` for lrzsz-only servers, with **the same progress line** (upstream trzsz `TextProgressBar`,
-  vendored verbatim) drawn in the terminal.
-- Write paths are confined to the folder you actually picked in the native file dialog.
-- Cancel is silent — no thrown protocol exception, no half-written file claimed as complete.
-- **SFTP browser** (sidebar *Files* section, or right-click a tab → *Browse files…*): list, navigate,
-  upload, download, rename, make folders and delete on the server — the way to move files where neither
-  `lrzsz` nor `trz`/`tsz` is installed. It rides the connection the tab already has: no second login, no new
-  credential, and the local side of every transfer is a native dialog handled in Go, so no local path enters
-  the webview.
-
-**Hosts and secrets**
-- Saved hosts, groups, search, jump host (`ssh -J`, single hop), two-factor as "code appended to the
-  password" (the JumpServer style).
-- Host keys pinned on first use; a changed key refuses to connect. *Known hosts* panel to forget one.
-- Passwords live in Windows Credential Manager (pure syscall — no console window flash); platforms
-  without a keyring fall back to a sealed file. **No secret ever enters the webview.**
-- Export/import: hosts with their secrets in one opaque file — scrypt + AES-256-GCM.
-
-**Staying connected**
-- SSH keepalives (`keepalive@openssh.com`) — never an Enter, so nothing on the far side can run early.
-- Anti-idle for `TMOUT` / bastion activity timers, off by default: a space and a backspace (invisible),
-  an empty line, or a bare space for the one case the first two cannot reach — a TUI.
-- **Keepalive stops after an idle window** (default 24 h, 1–744 h configurable, enforced in Go).
-  While you are typing it keeps the session alive; once you have been quiet that long the probes
-  stop and the server's own idle policy decides when the connection goes away.
-
-**The rest**
-- Dark and light themes; the window frame follows the theme (DWM). Keyword colouring with per-line
-  vocabularies and `.msyn` import, six built-in rule sets: shell commands, bash scripts, nginx
-  access/error logs, nginx **config** (`nginx -T`, `cat nginx.conf`, and `grep -n` / `cat -n` output of
-  those files), Linux messages, and data shapes on any line. Full-screen programs keep their own
-  colouring: while `vim`, `nano`, `htop` and friends own the screen, nothing is inserted.
-- Settings apply to every open tab instantly and persist.
-- The host sidebar is resizable (drag its right edge: any width up to half the window, remembered
-between runs; double-click the edge to go back to the default, drag it to the left edge to collapse the
-sidebar — `Ctrl+Shift+B` brings it back at the width it had).
-- Config folder defaults to `%USERPROFILE%\AppData\Roaming\goterm` and is configurable
-  (Settings → Behaviour → Storage).
-
----
-
-## Install
-
-Download `goterm-v1.4.0-windows-x64.exe` (and the matching `.md5` / `.sha256`) from the repository's
-[**Releases**](https://github.com/ykfq/goterm/releases) page. The binaries there are built by GitHub
-Actions from the tag ([`.github/workflows/release.yml`](.github/workflows/release.yml)), never
-committed to the repository.
-
-It is a **single portable executable** — no installer. WebView2 (the browser engine Wails embeds) ships
-with Windows 10/11; on Windows Server or an LTSC image you may need the WebView2 Runtime installed once.
-Put the exe anywhere and run it.
-
-Requirements: **Windows 10/11 or Windows Server, x64**. This is a Windows application; the Wails
-project can be built for macOS/Linux, but only the Windows path is exercised here.
-
-## Build from source
+Requirements: Go 1.27.3 or later. Nothing else.
 
 ```powershell
-# prerequisites: Go >= 1.26, Node >= 20, and the Wails v3 CLI.
-# Go 1.26 is required, not 1.25: wails3 v3.0.0 declares `go 1.26.0`.
-go install github.com/wailsapp/wails/v3/cmd/wails3@latest
-
-git clone https://github.com/ykfq/goterm
-cd goterm
-wails3 build          # frontend deps + bindings + vite bundle + binary -> bin\goterm.exe
+go build -o bin\goterm.exe .
+.\bin\goterm.exe
 ```
 
-Behind a slow or filtered network a Go module mirror helps:
-`go env -w GOPROXY=https://goproxy.cn,direct`. If `wails3` is not found, put Go's bin directory on
-`PATH`.
-
-Regenerate the TypeScript bindings after changing a bound method:
+A program not built by the mygo CLI downloads `libghostty-vt` once into
+`%LOCALAPPDATA%\mygo\natives` and verifies its hash. To package the app the way releases are made:
 
 ```powershell
-wails3 generate bindings -ts -d frontend/bindings -clean
+go tool mygo build -platform windows/amd64 -o out -skip-installer
+# out\windows-amd64\GoTerm.exe + ghostty-vt.dll
 ```
 
-`wails3 dev` runs the Vite server with a hot-reloading webview; `npm run dev` inside `frontend/` gives
-you the UI alone (it will report "No Go backend" — there is no bridge).
+The release workflow builds a zip with both files, the licence and checksums.
 
-## Tests
+## Using it
 
-```powershell
-go test ./...                        # Go: SSH stack, host store, secrets, app bindings
-npm --prefix frontend test           # 421 vitest cases in 43 files
-npm --prefix frontend run typecheck  # vue-tsc, strict
-```
+- **New host** (Ctrl+Shift+T), fill in the address and pick an authentication method, then
+  double-click the host in the sidebar.
+- **Find** in the terminal: Ctrl+Shift+F. **File panel**: Ctrl+Shift+E. **Close tab**:
+  Ctrl+Shift+W. **Settings**: Ctrl+,.
+- **Duplicate / Reconnect**: right-click a tab. Drop files on the terminal to upload them.
+- `goterm.exe --connect <host-id>` opens a saved host at start-up; add `--files` to bring up its
+  file panel too.
 
-`internal/sshtest` is a real SSH server used by the Go tests, and `cmd/sshtest` exposes it for manual
-work — run it and connect to `127.0.0.1:2222` with `tester` / `goterm-dev` instead of a real host:
-
-```powershell
-go build -o build\bin\sshtest.exe .\cmd\sshtest
-.\build\bin\sshtest.exe -addr 127.0.0.1:2222 -hostkey "$env:TEMP\sshtest_key.pem"
-#   -2fa                password auth also demands a trailing one-time code
-#   -allow-forwarding   the server can act as a jump host (direct-tcpip)
-#   -shell trzsz        serves tsz/trz transfers
-```
-
-The GUI smoke scripts drive the built `bin\goterm.exe` with synthetic mouse and keyboard input, so they
-need an interactive desktop session:
-
-```powershell
-.\tools\gui-demo.ps1           # -> build\gui-dialog.png, gui-session.png, gui-typed.png
-.\tools\gui-check.ps1          # window renders at all
-.\tools\frame-check.ps1        # asks DWM what the window frame actually is
-.\tools\gui-transfer.ps1 -Direction download   # drives a real tsz/trz transfer, checks bytes
-```
-
-Those captures are **local artefacts and git-ignored on purpose**: a screenshot carries whatever the
-desktop or a screen-capture policy stamps onto it. `docs/screenshot.png` is the one curated image.
-
----
-
-## Keys and mouse
-
-| Action | Binding |
-| --- | --- |
-| Copy selection | `Ctrl+Shift+C` |
-| Paste | `Ctrl+Shift+V` |
-| Find in this tab | `Ctrl+Shift+F`, or right-click → *Find in terminal…* |
-| Quick connect | `Ctrl+Shift+T` (`Ctrl+T` when the terminal is not focused) |
-| Close tab | `Ctrl+Shift+W` (`Ctrl+W` outside the terminal), or middle-click the tab |
-| Toggle sidebar | `Ctrl+Shift+B` (`Ctrl+B` outside the terminal) |
-| Clear buffer | `Ctrl+Shift+K` (`Ctrl+K` outside the terminal) |
-| Next / previous tab | `Ctrl+Tab` / `Ctrl+Shift+Tab` |
-| Font size | `Ctrl+=`, `Ctrl+-`, `Ctrl+0`, or `Ctrl+wheel` |
-| Context menu / tab menu | right-click the terminal / right-click a tab |
-| Settings | `Ctrl+,` |
-
-**Some control keys belong to the shell, not to the app.** While the keyboard is inside a terminal,
-`Ctrl+W` deletes a word, `Ctrl+K` kills to end of line, `Ctrl+T` transposes, `Ctrl+B` is the tmux prefix
-and `Ctrl+F` is readline's forward-char — so the app's commands live on the `Shift`ed forms, and the
-unshifted ones still work when focus is in the sidebar or a dialog. (This is not politeness: `Ctrl+W`
-used to close the tab *and* rub out a word, so three typos cost you the session.)
-
-**When a full-screen program owns the mouse** (`htop`, `tmux`): right-click goes to the program, which
-draws its own menu; `Shift+right-click` opens GoTerm's. `Shift+drag` selects locally, and copy-on-select
-still copies it on release. The program's own *Copy* item works as well: it writes the text out with OSC 52
-and GoTerm puts it on the clipboard. `Ctrl+wheel` still zooms.
-
-**Pasting several lines** opens an editable confirmation box first — a block of text is a script nobody
-has read. One line (with or without its newline) goes straight through.
-
-## Settings worth knowing
-
-| Section | What it does |
-| --- | --- |
-| Appearance | Terminal font (monospace only, enumerated from the system), **Scrollback** (lines kept per tab), **Block and box characters**, **Remote text encoding**, terminal background (six presets or any colour) |
-| Behaviour | Word separator (with a live preview of what double-click will select), copy on select, **Session log**, **Idle sessions** (anti-idle + which nudge), **Idle keepalive** (stop after 1–744 h without input), **Storage** (where the files live) |
-| Highlighting | Six built-in keyword sets (shell, bash scripts, nginx logs, nginx config, messages, data shapes), custom keywords/regex with a colour, `.msyn` import |
-
-The light/dark theme is the sun/moon icon in the status bar; `Ctrl+=` / `Ctrl+-` / `Ctrl+0` change the
-font size.
-
-**Block and box characters** decides who draws `█`,`│`,`─`: xterm (fills the whole cell, which fuses
-`dust`'s bar chart into one block) or the font (keeps the line spacing, which can leave a hairline gap in
-a TUI's box borders). Off by default; both are pictured in
-[`docs/DECISIONS.md`](docs/DECISIONS.md) and the trade-off is real — there is no third option in xterm.
-
-**Storage** shows the folder that holds hosts, pinned host keys and any sealed secrets, and lets you move
-it. A move takes effect on the next start and nothing is copied for you — the old folder keeps its files
-until you move them, and a fresh folder simply starts empty. A `GOTERM_DIR` environment variable, when
-set, always wins (that is also how a portable copy is pointed at a folder beside the exe).
-
-Appearance and Behaviour apply instantly to every open tab and persist; switching panel tabs only
-shows/hides sections, so a half-written custom rule is never lost.
-
-## State on disk
-
-The folder Settings → Storage shows (default `%USERPROFILE%\AppData\Roaming\goterm`, or
-`$XDG_CONFIG_HOME/goterm`):
-
-| File | Contents |
-| --- | --- |
-| `hosts.json` | saved servers, no secrets |
-| `known_hosts.json` | pinned fingerprints |
-| `prefs.json` | the storage-folder pointer, always in the default folder |
-| `logs/` | session logs, when Settings → Behaviour → Session log is on |
-| `secrets.enc` + `master.key` | only when the sealed-file backend is in use |
-
-Credential-Manager secrets are generic credentials named `goterm/host/<id>/secret`.
-
----
-
-## How it is put together
-
-```
-main.go, app.go      Wails application + bound methods (thin: every method is a few lines)
-files.go             native file pickers and the scoped file bridge
-selftest.go          in-app self-test against internal/sshtest
-cmd/sshtest          a real SSH server for development and tests
-internal/sshx        SSH: connect, auth, host keys, keepalive, jump host, sessions, lifetime
-internal/sftpx       SFTP over the live SSH connection: list, upload, download, mkdir, rename, remove
-internal/hoststore   hosts.json, export/import, error markers the UI reacts to
-internal/secrets     Windows Credential Manager, sealed-file fallback
-internal/appdir      where state lives: GOTERM_DIR > the Settings pointer > the default
-internal/{atomicfile,hostport,fonts,wintheme,sshtest,testutil}
-
-frontend/src/lib/
-  terminal.ts    the byte pipe: base64 in, ordered writes to xterm, anti-idle, find, encoding
-  bytes.ts       base64 / UTF-8 / latin1 — the whole encoding story
-  zmodem.ts      lrzsz scan/transfer, driving the vendored progress bar
-  store.ts       app state: tabs, notices, settings, connect state machine
-frontend/src/vendor/trzsz/progress.ts   trzsz's progress bar, vendored verbatim
-frontend/src/components/                Vue 3 + Tailwind 4
-```
-
-`app.go` does bindings only; `internal/**` never imports Wails; dependencies point one way
-(`main → hoststore → sshx / secrets`). Full design notes, including the parts that took several
-attempts, are in [`docs/DECISIONS.md`](docs/DECISIONS.md).
-
-## Limits
-
-- The **remote** still needs `trz`/`tsz` (`pip install trzsz`, or drop the single binary in
-  `/usr/local/bin`) or `lrzsz`. GoTerm speaks the protocols; it cannot install them. The SFTP browser
-  needs none of that — only the server's `sftp-server` subsystem (OpenSSH enables it by default).
-- SFTP moves one file at a time and does not copy folders recursively; uploads and downloads always go
-  through a native picker, so a transfer is never started against a path you did not choose.
-- Jump hosts are a single hop (`ssh -J` style, no `-J a,b`), and the bastion must allow TCP forwarding.
-- Two-factor is the "code appended to the password" kind. There is no separate
-  keyboard-interactive challenge and no TOTP generation inside GoTerm.
-- Anti-idle cannot reset a timer that only counts *completed lines* unless you pick the empty-line nudge;
-  the bare-space nudge is the only one that reaches a TUI, and it leaves a space behind.
-- Keepalive stops after the idle window (24 h by default): whether the connection then actually drops
-  is up to the server and the network. Typing restarts the window, so a session in use is never cut off.
-- Keepalives prove the link is alive; they cannot detect a frozen server that still answers TCP
-  (an unanswered probe is noticed within ~45 s × 3).
-- Moving the storage folder applies on the next start, and GoTerm never copies your files for you.
-- A program can put text on the clipboard (OSC 52), but never read it back: read queries are ignored on purpose.
-- No installer (NSIS), no port forwarding, no `~/.ssh/config` parsing, no session logging, no per-host
-  profiles. Linux/macOS builds are untested and use a short built-in font list.
-- Output is decoded per your encoding setting; **input is always sent as UTF-8** (browsers have no GBK
-  encoder). On a GBK-only host, `export LANG=zh_CN.UTF-8` is the way out.
+Passwords live in Windows Credential Manager (or a sealed file where there is no key ring) and are
+never written to `hosts.json`. Session logs record the server's bytes before decoding, so they match
+what SSH delivered.
 
 ## License
 
-[Apache License 2.0](LICENSE) © GoTerm contributors. Third-party notices are in [NOTICE](NOTICE):
-bundled code keeps its own licence — Wails, xterm.js, Vue, trzsz, zmodem.js, lucide.
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).

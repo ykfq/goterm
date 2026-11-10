@@ -38,6 +38,7 @@ func main() {
 	transferDir := flag.String("transfer-dir", "", "directory trzsz uploads land in (default: a temp directory)")
 	twoFactor := flag.Bool("2fa", false, "password auth also needs a trailing one-time code (password<digits>), like a TOTP bastion")
 	allowForwarding := flag.Bool("allow-forwarding", false, "accept direct-tcpip channels, so this server can act as a jump host")
+	sftpRoot := flag.String("sftp-root", "", "directory the SFTP subsystem starts in (default: a scratch directory)")
 	verbose := flag.Bool("v", false, "log every request")
 	flag.Parse()
 
@@ -72,6 +73,7 @@ func main() {
 		Shell:           shell,
 		TwoFactor:       *twoFactor,
 		AllowForwarding: *allowForwarding,
+		SFTPRoot:        *sftpRoot,
 		Logger:          logger,
 	})
 	if err != nil {
