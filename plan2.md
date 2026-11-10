@@ -55,6 +55,7 @@
 - `go test .`：焦点两项、SFTP 面板渲染/选中、尺寸与进度格式、导出→删除→导入（含密码）、
   标签换位、trzsz 真实下载（sshtest 的 TrzszShell，57 KB 字节目录一致）均通过。
 - `go test ./internal/sshx`（输出队列/背压/日志共存）通过。
+- ⚠️ ZMODEM 分支已启用但未自动化：sshtest 只提供 trzsz 服务端，`rz`/`sz` 仍需真机确认。
 - 真机：`--connect --files` 连本地 sshtest（SFTP 根目录预置 `logs/`、`readme.txt`），
   面板正确列出条目，终端与面板并排 68 列；截图只留在本地。
 - 真机：`--connect` 连本地 sshtest，窗口显示终端、直接发送按键即到达会话；截图只留在本地。
