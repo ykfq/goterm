@@ -43,10 +43,15 @@
   下载默认落到 `%APPDATA%\goterm\downloads`，上传弹原生文件选择框；关掉了库的 Windows 控制台协议改写。
 - **P4 部分**：标签拖拽换位（带活动标签跟随测试）；远端编码切换对已开会话即时生效
   （`decodingReader`，不重建终端）。
+- **关键字高亮**：`internal/highlight` 在解码后的字节流上注入 SGR。只处理不含 ESC 的纯文本行；
+  跟踪备用屏幕、绝对光标定位和程序自己设置的 SGR，`vim`/`less`/`top`/`htop`、`grep --color`、
+  编译器彩色诊断一律不接管。覆盖 `cat`/`tail`/`head`/`ps`/`tee` 与普通日志的关键字、级别、
+  IP/URL/时间、shell/bash 命令、syslog 与 nginx 日志/配置；设置里可即时开关。
 
 **尚未落地**
 
-- P4：关键字高亮（需你拍板）、单词分隔符；回看大小对已开终端需重连（终端库没有运行时 setter）。
+- P4：单词分隔符可配；回看大小对已开终端需重连（终端库没有运行时 setter）。
+- 高亮自定义关键字 / `.msyn` 导入（内置规则已覆盖常见纯文本输出；如需自定义再加）。
 - P5：automation 端到端脚本、CI 首次全量验证。
 
 **验证记录**
@@ -55,6 +60,8 @@
 - `go test .`：焦点两项、SFTP 面板渲染/选中、尺寸与进度格式、导出→删除→导入（含密码）、
   标签换位、trzsz 真实下载（sshtest 的 TrzszShell，57 KB 字节目录一致）均通过。
 - `go test ./internal/sshx`（输出队列/背压/日志共存）通过。
+- `go test ./internal/highlight`：纯文本着色且字节不变、程序颜色优先、备用屏幕/绝对光标不接管、
+  跨块 ESC、二进制与超长行直通、关闭后完全透传、Reader 小缓冲不丢字节。
 - ⚠️ ZMODEM 分支已启用但未自动化：sshtest 只提供 trzsz 服务端，`rz`/`sz` 仍需真机确认。
 - 真机：`--connect --files` 连本地 sshtest（SFTP 根目录预置 `logs/`、`readme.txt`），
   面板正确列出条目，终端与面板并排 68 列；截图只留在本地。
@@ -101,9 +108,9 @@
 | --- | --- | --- |
 | 二进制保真 | 字节直接进 VT，无 base64 往返 | ✅（更短路径） |
 | GPU 渲染 | mygo D3D11/Metal/OpenGL，VT 自绘 | ✅ |
-| 关键字高亮（MobaXterm filter） | VT 模拟器没有"逐行着色"钩子；只能在字节层注入 SGR，会破坏 TUI | ⚠️ 见 §6 |
-| `grep --color` 不覆盖 | 同上 | ⚠️ |
-| 自定义关键字 / `.msyn` 导入 | 同上 | ⚠️ |
+| 关键字高亮（MobaXterm filter） | `internal/highlight`：只装饰“不含 ESC 的纯文本行”，跟踪备用屏幕/绝对光标/程序 SGR；`cat`/`tail`/`head`/`ps`/`tee` 与普通日志着色，`vim`/`less`/`top` 等全屏程序不接管 | ✅ |
+| `grep --color` 不覆盖 | 程序自己设置了前景/背景/反显时，该行不再注入颜色；粗体/下划线仍可叠加 | ✅ |
+| 自定义关键字 / `.msyn` 导入 | 内置 shell/bash/syslog/nginx/data/words 规则；自定义规则尚未暴露到界面 | 🚧 |
 | 字体只列等宽 | `internal/fonts` 不变，`ui.RegisterFont`/`terminal.Font` | ✅ |
 | 单词分隔符可配 | Ghostty 选择规则固定 | ⚠️ |
 | 自定义背景色 / 主题 | `terminal.Theme` + Ghostty 主题列表 | 🚧 |
@@ -258,9 +265,10 @@ go tool mygo build          # 或 wails 替代品：mygo build
 
 ## 6. 需要决策/说明的差异
 
-1. **关键字高亮**：VT 模拟器没有逐行改色接口。可选方案：
-   (a) 放弃；(b) 仅对"纯文本行"做字节级 SGR 注入（TUI 关闭）；(c) 另做日志查看器。
-   默认按 (a) 迁移，等你拍板。
+1. **关键字高亮**：VT 模拟器没有逐行改色接口，因此在字节流层注入 SGR，但把边界写死在实现里：
+   只处理不含 ESC 的纯文本行；进入备用屏幕（`?1049`/`?1047`/`?47`）、出现绝对光标定位（`H`/`f`）、
+   或程序自己选了颜色时，高亮自动让位。因此 `cat`/`tail`/`head`/`ps`/`tee`/`top -b` 会着色，
+   而 `vim`/`less`/交互式 `top` 保持原样。自定义规则与 `.msyn` 导入仍待做。
 2. **滚动回看单位**：Ghostty 按字节，不再按行；默认 8 MB。
 3. **设置迁移**：旧 localStorage 设置不迁移，升级后回默认值。
 4. **trzsz/ZMODEM**：已接 `trzsz-go` 的 `TrzszFilter`（`transfer.go`），关掉了它的 Windows 控制台协议改写（我们不是 ConPTY），

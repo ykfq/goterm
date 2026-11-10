@@ -24,6 +24,10 @@ This branch (`mygo-native`) replaces the 1.4.0 Wails/Vue/xterm frontend. What wo
 - Real terminal: colours, mouse reporting, scrollback, selection, copy/paste, search
   (Ctrl+Shift+F), IME composition at the cursor, OSC 52 copy.
 - Session logging to `%APPDATA%\goterm\logs` (off by default, switchable at runtime).
+- **Keyword highlighting** for plain output (`cat`, `tail`, `head`, `ps`, `tee`, batch `top`, logs):
+  severities, addresses, URLs, timestamps, shell/bash vocabulary, syslog and nginx. Full-screen
+  programs (`vim`, `less`, interactive `top`) and lines the program already coloured are left alone.
+  Switchable at runtime.
 - **SFTP file panel** (Ctrl+Shift+E, tab menu, or `--files`): browse, upload, download, make
   folders, rename, delete, refresh, with progress. Drop files on the terminal to upload them to the
   panel's directory. It rides the session's own SSH connection, so no second login.
@@ -35,9 +39,9 @@ This branch (`mygo-native`) replaces the 1.4.0 Wails/Vue/xterm frontend. What wo
 - Settings in `settings.json`: theme, font family/size, scrollback (MB), logging, remote encoding
   (UTF-8/GB18030/Big5/Shift_JIS), select-to-copy, idle hours, data directory.
 
-Not ported yet (tracked in [plan2.md](plan2.md)): keyword highlighting (a VT emulator has no line
-hook), the known-hosts review beyond listing/forgetting, and resizing the scrollback of an open
-terminal (reconnect applies it).
+Not ported yet (tracked in [plan2.md](plan2.md)): user-defined highlight rules and `.msyn` import,
+the known-hosts review beyond listing/forgetting, and resizing the scrollback of an open terminal
+(reconnect applies it).
 
 ## Build
 

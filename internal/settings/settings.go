@@ -34,6 +34,7 @@ type Settings struct {
 	FontSize         int     `json:"fontSize"`
 	ScrollbackMB     int     `json:"scrollbackMB"`
 	SessionLogging   bool    `json:"sessionLogging"`
+	Highlight        bool    `json:"highlight"`
 	Encoding         string  `json:"encoding"`
 	CopyOnSelect     bool    `json:"copyOnSelect"`
 	IdleTimeoutHours int     `json:"idleTimeoutHours"`
@@ -51,6 +52,7 @@ func Default() Settings {
 		FontSize:         14,
 		ScrollbackMB:     DefaultScrollbackMB,
 		SessionLogging:   false,
+		Highlight:        true,
 		Encoding:         "utf-8",
 		CopyOnSelect:     true,
 		IdleTimeoutHours: 24,

@@ -7,6 +7,7 @@ import (
 	"github.com/trzsz/trzsz-go/trzsz"
 
 	"github.com/ykfq/goterm/internal/encode"
+	"github.com/ykfq/goterm/internal/highlight"
 	"github.com/ykfq/goterm/internal/sshx"
 )
 
@@ -28,6 +29,7 @@ type transferConn struct {
 	outW *io.PipeWriter
 
 	dec    *decodingReader
+	hl     *highlight.Reader
 	filter *trzsz.TrzszFilter
 
 	closeOnce sync.Once
@@ -65,6 +67,7 @@ func newTransferConn(s *sshx.Session, enc encode.Name, downloadDir string) (*tra
 		outW: outW,
 	}
 	c.dec = newDecodingReader(outR, enc)
+	c.hl = highlight.NewReader(c.dec)
 	c.filter = trzsz.NewTrzszFilter(inR, outW, sessionIn{s}, raw, trzsz.TrzszOptions{
 		TerminalColumns: 100,
 		EnableZmodem:    true,
@@ -75,7 +78,11 @@ func newTransferConn(s *sshx.Session, enc encode.Name, downloadDir string) (*tra
 	return c, nil
 }
 
-func (c *transferConn) Read(p []byte) (int, error) { return c.dec.Read(p) }
+func (c *transferConn) Read(p []byte) (int, error) { return c.hl.Read(p) }
+
+// SetHighlight turns keyword colouring on or off for this tab without
+// rebuilding the terminal or the SSH session.
+func (c *transferConn) SetHighlight(on bool) { c.hl.SetEnabled(on) }
 
 // SetEncoding switches the remote-output decoder without rebuilding the
 // terminal. A character split across the switch can be lost; the next one

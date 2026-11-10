@@ -106,6 +106,14 @@ func (a *App) settingsAppearance(c *ui.Context) {
 func (a *App) settingsBehaviour(c *ui.Context) {
 	ui.Scroll(c).Grow(1).Children(func() {
 		ui.Column(c).Gap(12).Children(func() {
+			ui.Field(c, "Highlight keywords in terminal output", func() {
+				if ui.Switch(c, &a.prefs.Highlight).Changed() {
+					a.applySettings()
+				}
+			})
+			ui.Text(c, "Colours errors, warnings, addresses and commands in plain output (cat, tail, head, ps, tee). Full-screen programs such as vim, less and top keep their own colours.").
+				FontSize(11).TextColor(c.Theme().TextMuted)
+
 			ui.Field(c, "Record every session to a log file", func() {
 				if ui.Switch(c, &a.prefs.SessionLogging).Changed() {
 					a.applySettings()
