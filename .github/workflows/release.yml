@@ -1,13 +1,13 @@
 name: release
 
-# Builds the Windows x64 binary and publishes it as a GitHub Release asset.
-# Binaries are never committed to the repository: push a tag and this workflow
-# produces the exe plus its checksums.
+# Builds the Windows x64 app with mygo and publishes it as a GitHub Release
+# asset. Binaries are never committed: push a tag and this workflow produces a
+# zip with the executable, the terminal library it loads, and checksums.
 #
-#   git tag -a v1.0.0 -m "GoTerm 1.0.0"      # then: git push origin v1.0.0
+#   git tag -a v2.0.0 -m "GoTerm 2.0.0"      # then: git push origin v2.0.0
 #
 # Running it by hand (Actions -> release -> Run workflow) builds the same thing
-# and publishes it under the tag you type in.
+# under the tag you type in.
 
 on:
   push:
@@ -15,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to publish (e.g. v1.0.0). Created at the selected ref if it does not exist.'
+        description: 'Tag to publish (e.g. v2.0.0). Created at the selected ref if it does not exist.'
         required: true
 
 permissions:
@@ -24,9 +24,6 @@ permissions:
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
-
-env:
-  WAILS_VERSION: v3.0.0
 
 jobs:
   windows-x64:
@@ -39,55 +36,60 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-
-      - name: Install the Wails CLI
-        run: |
-          go install github.com/wailsapp/wails/v3/cmd/wails3@${{ env.WAILS_VERSION }}
-          "$(go env GOPATH)\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
       - name: Resolve the version
         id: version
+        shell: pwsh
         run: |
           $raw = if ('${{ github.event_name }}' -eq 'workflow_dispatch') { '${{ inputs.tag }}' } else { $env:GITHUB_REF_NAME }
           if (-not $raw) { throw 'no tag to release' }
           $v = $raw.TrimStart('v')
-          "tag=$raw"     | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "semver=$v"    | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          Write-Host "releasing $raw (version $v)"
+          $declared = (Get-Content mygo.json -Raw | ConvertFrom-Json).version
+          if ($declared -ne $v) {
+            throw "tag $raw does not match mygo.json version $declared"
+          }
+          "tag=$raw"  | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "semver=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          Write-Host "releasing $raw"
 
       - name: Stamp the version into the source
         shell: pwsh
         run: |
           $v = '${{ steps.version.outputs.semver }}'
-          # The status bar reads app.go's constant; the Windows file properties
-          # read build/config.yml. Neither is committed back.
+          # The status bar reads app.go's constant; mygo build reads
+          # mygo.json for the executable's version resource. Neither is
+          # committed back.
           (Get-Content app.go -Raw) -replace 'const Version = "[^"]*"', ('const Version = "' + $v + '"') |
             Set-Content app.go -NoNewline -Encoding utf8
-          (Get-Content build/config.yml -Raw) -replace '(?m)^  version: ".*"', ('  version: "' + $v + '"') |
-            Set-Content build/config.yml -Encoding utf8
+          $cfg = Get-Content mygo.json -Raw | ConvertFrom-Json
+          $cfg.version = $v
+          $cfg | ConvertTo-Json -Depth 8 | Set-Content mygo.json -Encoding utf8
+
+      - name: Test
+        run: |
+          go vet ./...
+          go test ./...
 
       - name: Build
-        run: wails3 build
+        run: go tool mygo build -platform windows/amd64 -o out -skip-installer
 
-      - name: Checksums
+      - name: Package
         id: sums
         shell: pwsh
         run: |
           $v = '${{ steps.version.outputs.semver }}'
-          $name = "goterm-v$v-windows-x64.exe"
-          New-Item -ItemType Directory -Force out | Out-Null
-          Copy-Item bin\goterm.exe "out\$name"
-          $md5 = (Get-FileHash "out\$name" -Algorithm MD5).Hash.ToLower()
-          $sha = (Get-FileHash "out\$name" -Algorithm SHA256).Hash.ToLower()
-          # md5sum-compatible, so `md5sum -c` works on the other side.
-          "$md5  $name`n" | Out-File -FilePath "out\$name.md5" -Encoding ascii -NoNewline
-          "$sha  $name`n" | Out-File -FilePath "out\$name.sha256" -Encoding ascii -NoNewline
-          "md5=$md5"   | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          $name = "goterm-v$v-windows-x64"
+          $dir = "out\$name"
+          New-Item -ItemType Directory -Force $dir | Out-Null
+          Copy-Item out\windows-amd64\GoTerm.exe "$dir\goterm.exe"
+          Copy-Item out\windows-amd64\ghostty-vt.dll "$dir\ghostty-vt.dll"
+          Copy-Item LICENSE, NOTICE $dir
+          Compress-Archive -Path "$dir\*" -DestinationPath "out\$name.zip" -Force
+
+          $md5 = (Get-FileHash "out\$name.zip" -Algorithm MD5).Hash.ToLower()
+          $sha = (Get-FileHash "out\$name.zip" -Algorithm SHA256).Hash.ToLower()
+          "$md5  $name.zip`n"  | Out-File -FilePath "out\$name.zip.md5" -Encoding ascii -NoNewline
+          "$sha  $name.zip`n"  | Out-File -FilePath "out\$name.zip.sha256" -Encoding ascii -NoNewline
+          "md5=$md5"    | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "sha256=$sha" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "name=$name"  | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           Get-ChildItem out | Format-Table Name, Length | Out-String | Write-Host
@@ -97,25 +99,23 @@ jobs:
         run: |
           $tag  = '${{ steps.version.outputs.tag }}'
           $name = '${{ steps.sums.outputs.name }}'
-          $md5  = '${{ steps.sums.outputs.md5 }}'
-          $sha  = '${{ steps.sums.outputs.sha256 }}'
           $lines = @(
-            "### GoTerm $tag (Windows x64)",
+            "### GoTerm $tag (Windows x64, native UI)",
             '',
-            '| | |',
-            '| --- | --- |',
-            "| file | $name |",
-            "| MD5 | $md5 |",
-            "| SHA256 | $sha |",
+            "| | |",
+            "| --- | --- |",
+            "| file | $name.zip |",
+            "| MD5 | $($steps.sums.outputs.md5) |",
+            "| SHA256 | $($steps.sums.outputs.sha256) |",
             '',
-            "Built from ${{ github.sha }} with Go and Wails ${{ env.WAILS_VERSION }}."
+            "Built from ${{ github.sha }} with Go and mygo. No WebView2, no Node."
           )
           $lines -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
 
       - uses: actions/upload-artifact@v4
         with:
           name: goterm-${{ steps.version.outputs.tag }}-windows-x64
-          path: out/*
+          path: out/goterm-*.zip*
           if-no-files-found: error
 
       - name: Publish the release
@@ -125,15 +125,14 @@ jobs:
         run: |
           $tag = '${{ steps.version.outputs.tag }}'
           $name = '${{ steps.sums.outputs.name }}'
-          $files = @("out\$name", "out\$name.md5", "out\$name.sha256")
+          $files = @("out\$name.zip", "out\$name.zip.md5", "out\$name.zip.sha256")
 
           gh release view $tag *> $null
           if ($LASTEXITCODE -eq 0) {
-            # Re-running a release (moved tag, manual dispatch): replace the assets.
             gh release upload $tag @files --clobber
           } else {
             gh release create $tag @files `
               --title "GoTerm $tag" `
               --generate-notes `
-              --notes "Windows x64, single portable executable, not code-signed (SmartScreen warns on first run). Checksums are attached as .md5 and .sha256."
+              --notes "Windows x64, native UI in pure Go (mygo + Ghostty's terminal emulator). Unzip both files, then run goterm.exe. Not code-signed, so SmartScreen warns on first run. Checksums are attached."
           }
