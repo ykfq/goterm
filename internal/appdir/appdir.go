@@ -7,7 +7,15 @@
 //     dir, and a portable copy can point it at a folder beside the exe;
 //  2. a pointer the user set in Settings → Storage, stored in prefs.json in the
 //     *default* directory so it can always be found again;
-//  3. the default directory: %APPDATA%\goterm ($XDG_CONFIG_HOME/goterm).
+//  3. the default directory: a `data` folder beside the executable when that
+//     folder is writable (a portable copy keeps everything together), else
+//     %APPDATA%\goterm ($XDG_CONFIG_HOME/goterm).
+//
+// The executable's own folder is preferred because GoTerm is shipped as a
+// two-file portable folder; keeping hosts.json, settings.json and logs/ next
+// to the binary is what makes copying that folder a full migration. Only when
+// the program sits somewhere it cannot write (Program Files, a read-only
+// share) does the default fall back to the per-user configuration folder.
 //
 // Direction matters: the setting says where the *data* lives, and lives itself
 // somewhere that never moves. Otherwise a bad path would make the setting
@@ -45,9 +53,30 @@ var (
 	err  error
 )
 
-// DefaultDir is where state lives when nothing says otherwise. It is not
-// created here.
-func DefaultDir() (string, error) {
+// PortableDir is the `data` folder beside the running executable, or "" when
+// the executable cannot be located or that folder cannot be created.
+func PortableDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	dir := filepath.Join(filepath.Dir(exe), "data")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return ""
+	}
+	if err := probeWritable(dir); err != nil {
+		return ""
+	}
+	return dir
+}
+
+// UserConfigDir is %APPDATA%\goterm (or $XDG_CONFIG_HOME/goterm). It is the
+// fallback for a copy that cannot write beside itself, and the place the
+// pointer to a chosen directory always lives.
+func UserConfigDir() (string, error) {
 	base, e := os.UserConfigDir()
 	if e != nil {
 		return "", fmt.Errorf("locate user config dir: %w", e)
@@ -55,18 +84,37 @@ func DefaultDir() (string, error) {
 	return filepath.Join(base, "goterm"), nil
 }
 
+// DefaultDir is where state lives when nothing says otherwise. It is not
+// created here except for the portable candidate, which has to be probed to
+// know whether it is usable.
+func DefaultDir() (string, error) {
+	if p := PortableDir(); p != "" {
+		return p, nil
+	}
+	return UserConfigDir()
+}
+
 // EnvDir returns GOTERM_DIR as set, or "".
 func EnvDir() string { return os.Getenv("GOTERM_DIR") }
 
 // Configured returns the directory the user chose in Settings, or "" for the
 // default. It reads the pointer file every time, so it also answers "what
-// changes on the next start".
+// changes on the next start". The pointer lives in the user configuration
+// folder when there is one, because the default may be beside an executable
+// that moves.
 func Configured() (string, error) {
 	dflt, err := DefaultDir()
 	if err != nil {
 		return "", err
 	}
-	return readConfigured(dflt)
+	chosen, err := readConfigured(dflt)
+	if err != nil || chosen != "" {
+		return chosen, err
+	}
+	if user, uerr := UserConfigDir(); uerr == nil && !samePath(user, dflt) {
+		return readConfigured(user)
+	}
+	return "", nil
 }
 
 func readConfigured(dflt string) (string, error) {
@@ -143,10 +191,16 @@ func SetDir(path string) error {
 	if err != nil {
 		return err
 	}
+	pointer, err := UserConfigDir()
+	if err != nil {
+		pointer = dflt
+	}
 	path = strings.TrimSpace(path)
 	if path == "" || samePath(path, dflt) {
-		if err := os.Remove(filepath.Join(dflt, prefsFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("clear %s: %w", prefsFile, err)
+		for _, dir := range []string{dflt, pointer} {
+			if err := os.Remove(filepath.Join(dir, prefsFile)); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("clear %s: %w", prefsFile, err)
+			}
 		}
 		return nil
 	}
@@ -164,7 +218,7 @@ func SetDir(path string) error {
 	if err != nil {
 		return err
 	}
-	return atomicfile.Write(filepath.Join(dflt, prefsFile), append(raw, '\n'), 0o600)
+	return atomicfile.Write(filepath.Join(pointer, prefsFile), append(raw, '\n'), 0o600)
 }
 
 // probeWritable proves the directory accepts a file, which MkdirAll alone does

@@ -1,8 +1,9 @@
 # GoTerm
 
-**A desktop SSH terminal written in pure Go**, with a native user interface drawn by
-[mygo](https://mygo.egoist.dev) and [Ghostty's terminal emulator](https://ghostty.org)
-(libghostty-vt, loaded at runtime).
+**A desktop SSH terminal written in pure Go** with first-class support for
+[trzsz](https://github.com/trzsz/trzsz) file transfer (`trz`/`tsz`, and classic `lrzsz` `rz`/`sz` too),
+a native user interface drawn by [mygo](https://mygo.egoist.dev) and
+[Ghostty's terminal emulator](https://ghostty.org) (libghostty-vt, loaded at runtime).
 
 No WebView2, no Chromium, no Node, no frontend build: the window, the tabs, the settings and the
 terminal are all Go. That is also why memory stays bounded when a session prints a hundred megabytes

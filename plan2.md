@@ -155,7 +155,7 @@
 | 需求 | 2.x 做法 | 状态 |
 | --- | --- | --- |
 | trzsz（trz/tsz）拦截 + 进度 | `transferConn` 用 `trzsz-go` 的 `TrzszFilter` 包住 SSH 字节流；进度条由过滤器画进终端 | ✅ |
-| ZMODEM `rz`/`sz` | 同一过滤器 `EnableZmodem: true`，下载到 `%APPDATA%\goterm\downloads` | ✅ |
+| ZMODEM `rz`/`sz` | `internal/zmodem` 纯 Go 实现（hex/bin 头、CRC16、ZFILE/ZDATA/ZEOF、ZRINIT 握手），上传/下载都弹原生保存框；真实 SSH 下 `rz` 上传已通过（`TestLrzszUpload`），`sz` 下载在接管字节流后仍未跑通（`TestLrzszDownload` 失败），帧收发单测均通过 | ⚠️ |
 | 拖文件进终端即上传 | `ui.DroppedFiles` + SFTP 上传 | ✅ |
 | 原生文件选择框 | mygo 桌面 API（`mygo.Dialog`） | ✅ |
 | 路径限制 / `../` 消毒 | `internal/sftpx` 不变 | ✅ |

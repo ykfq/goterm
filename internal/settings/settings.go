@@ -39,6 +39,8 @@ type Settings struct {
 	CopyOnSelect     bool    `json:"copyOnSelect"`
 	IdleTimeoutHours int     `json:"idleTimeoutHours"`
 	SidebarWidth     float32 `json:"sidebarWidth"`
+	// LastUploadDir is where the next upload dialog opens.
+	LastUploadDir string `json:"lastUploadDir,omitempty"`
 	// LastHostID reopens the sidebar on the host used last.
 	LastHostID string `json:"lastHostId,omitempty"`
 }

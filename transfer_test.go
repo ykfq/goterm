@@ -61,7 +61,7 @@ func TestTrzszDownloadThroughTheFilter(t *testing.T) {
 	}
 
 	downloads := t.TempDir()
-	conn, err := newTransferConn(sess, encode.UTF8, downloads)
+	conn, err := newTransferConn(sess, encode.UTF8, fixedChooser{dir: downloads})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,3 +148,4 @@ func TestDecodingReaderSwitchesMidStream(t *testing.T) {
 		t.Fatalf("after switching to UTF-8 read = %q, %v", buf[:n], err)
 	}
 }
+

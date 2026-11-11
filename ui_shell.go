@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
@@ -33,18 +34,27 @@ func (a *App) view(c *ui.Context) {
 	if c.Shortcut(ui.Ctrl|ui.Shift, ui.KeyE) {
 		a.toggleSFTP(a.current())
 	}
+	if c.Shortcut(ui.Ctrl|ui.Shift, ui.KeyB) {
+		a.toggleSidebar()
+	}
 
 	ui.Row(c).Fill().Children(func() {
+		if a.sidebarHidden {
+			a.rail(c)
+			ui.Column(c).Grow(1).Children(func() { a.main(c) })
+			return
+		}
 		split := ui.Split(c, &a.prefs.SidebarWidth,
 			func() { a.sidebar(c) },
 			func() { a.main(c) },
-		).Fill()
+		).Fill().SplitReset(268)
 		if split.Changed() {
 			a.prefs.Save(a.configPath)
 		}
 	})
 
 	a.settingsDialog(c)
+	a.animate(c)
 	a.hostEditorDialog(c)
 	a.promptDialog(c)
 	a.confirmDialog(c)
@@ -58,6 +68,7 @@ func (a *App) sidebar(c *ui.Context) {
 		ui.Row(c).Padding(10).Gap(6).Children(func() {
 			ui.SearchField(c, &a.query).Placeholder("Search hosts").Grow(1)
 			ui.Button(c, "+").Label("New host").Tooltip("New host (Ctrl+Shift+T)").OnClick(a.openNewHost)
+			ui.Button(c, "‹").Label("Hide sidebar").Tooltip("Hide sidebar (Ctrl+Shift+B)").OnClick(a.toggleSidebar)
 		})
 		ui.Divider(c)
 		ui.Scroll(c).Grow(1).Children(func() {
@@ -87,6 +98,25 @@ func (a *App) sidebar(c *ui.Context) {
 			}
 		})
 	})
+}
+
+// rail is the sidebar folded away: one narrow strip that keeps the way back
+// visible, so a hidden panel never leaves the window looking broken.
+func (a *App) rail(c *ui.Context) {
+	ui.Column(c).Width(34).FillHeight().Background(c.Theme().Surface).Border(1, c.Theme().Border).Children(func() {
+		ui.Row(c).Padding(6, 4).Justify(ui.Center).Children(func() {
+			ui.Button(c, "›").Label("Show sidebar").Tooltip("Show sidebar (Ctrl+Shift+B)").OnClick(a.toggleSidebar)
+		})
+	})
+}
+
+// toggleSidebar folds the host list away and back. The width it had stays in
+// the settings, so showing it again restores what the user chose.
+func (a *App) toggleSidebar() {
+	a.sidebarHidden = !a.sidebarHidden
+	if a.win != nil {
+		a.win.Invalidate()
+	}
 }
 
 // orderedGroups lists group names, sorted, with Ungrouped first so the
@@ -228,7 +258,19 @@ func (a *App) main(c *ui.Context) {
 			if pane.FileDragOver() {
 				pane.Border(2, c.Theme().Accent)
 			}
-			a.sftpView(c, t)
+			if t.SFTP != nil && t.SFTP.Open {
+				a.clampFilesWidth(t, c)
+				split := ui.Split(c, &t.FilesWidth,
+					func() { a.sftpView(c, t) },
+					func() {},
+				).Fill()
+				if split.Changed() {
+					a.clampFilesWidth(t, c)
+					if a.win != nil {
+						a.win.Invalidate()
+					}
+				}
+			}
 		})
 		a.statusBar(c)
 	})
@@ -276,7 +318,14 @@ func (a *App) tabChip(c *ui.Context, i int, t *Tab) {
 		case StatusClosed:
 			status = c.Theme().TextMuted
 		}
-		ui.Box(c).Size(6, 6).Radius(3).Background(status)
+		// The dot is the tab's state. A hidden tab that produced output gets a
+		// slow blue blink on top of it: the terminal is easy to forget about
+		// when it keeps working in the background.
+		dot := ui.Box(c).Size(6, 6).Radius(3).Background(status)
+		if t.Inactive.Load() && !active {
+			level := pulseLevel(time.Now())
+			dot.Background(mixColor(status, c.Theme().Accent, level))
+		}
 		ui.Text(c, tabTitle(t)).MaxLines(1).FontSize(12)
 		ui.Button(c, "✕").Label("Close "+tabTitle(t)).FontSize(9).BorderWidth(0).
 			Background(ui.Transparent).Padding(2, 4).Tooltip("Close tab").

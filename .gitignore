@@ -38,3 +38,7 @@
 /.mygo/
 *.test.exe
 
+
+# Local toolchain and scratch (Go SDK copy, gathered icon assets, probe programs):
+# never part of the product and it names paths on one developer's machine.
+/.toolchain/

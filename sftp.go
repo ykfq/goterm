@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/egoist/mygo"
@@ -34,6 +35,37 @@ func (t *Tab) sftp() *SFTPPanel {
 		t.SFTP = &SFTPPanel{}
 	}
 	return t.SFTP
+}
+
+// defaultFilesWidth is how wide the file panel opens before anyone drags it.
+const defaultFilesWidth = 360
+
+// clampFilesWidth keeps the panel within [240 DIP, half the window]: the
+// terminal it shares the window with must keep at least half. A tab that has
+// never been dragged takes the default, which is also clamped for a narrow
+// window.
+func (a *App) clampFilesWidth(t *Tab, c *ui.Context) {
+	if t == nil || c == nil {
+		return
+	}
+	w, _ := c.Size()
+	if w <= 0 {
+		return
+	}
+	half := w / 2
+	minW := float32(240)
+	if minW > half {
+		minW = half
+	}
+	if t.FilesWidth <= 0 {
+		t.FilesWidth = defaultFilesWidth
+	}
+	if t.FilesWidth > half {
+		t.FilesWidth = half
+	}
+	if t.FilesWidth < minW {
+		t.FilesWidth = minW
+	}
 }
 
 func (a *App) toggleSFTP(t *Tab) {
@@ -128,10 +160,12 @@ func (a *App) sftpPickDownload(t *Tab, e sftpx.Entry) {
 		return
 	}
 	go func() {
+		// A download goes where the user points: the dialog starts at the
+		// configured download folder, which is where tsz saves without asking.
 		target, err := mygo.Dialog.Save(mygo.SaveDialogOptions{
 			Parent:      a.win,
 			Title:       "Download " + e.Name,
-			DefaultPath: e.Name,
+			DefaultPath: filepath.Join(a.downloadDir, e.Name),
 		})
 		if err != nil || target == "" {
 			return
@@ -252,12 +286,15 @@ func sftpDir(t *Tab) string {
 }
 
 // sftpView draws the panel.
+// sftpView draws the panel. Its width is the tab's own setting, dragged with
+// the splitter beside it and capped at half the window so the terminal never
+// loses the room it needs.
 func (a *App) sftpView(c *ui.Context, t *Tab) {
 	st := t.SFTP
 	if st == nil || !st.Open {
 		return
 	}
-	ui.Column(c).Width(360).FillHeight().Background(c.Theme().Surface).Border(1, c.Theme().Border).Children(func() {
+	ui.Column(c).FillHeight().Background(c.Theme().Surface).Border(1, c.Theme().Border).Children(func() {
 		ui.Row(c).Padding(8, 10).Gap(8).Children(func() {
 			ui.Text(c, "Files").Bold().Grow(1)
 			ui.Button(c, "✕").Label("Close files").BorderWidth(0).Background(ui.Transparent).

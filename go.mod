@@ -9,6 +9,7 @@ require (
 	github.com/pkg/sftp v1.13.12
 	github.com/trzsz/trzsz-go v1.2.0
 	golang.org/x/crypto v0.57.0
+	golang.org/x/term v0.46.0
 	golang.org/x/text v0.44.0
 )
 
@@ -48,7 +49,6 @@ require (
 	golang.org/x/image v0.46.0 // indirect
 	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
-	golang.org/x/term v0.46.0 // indirect
 )
 
 tool github.com/egoist/mygo/cmd/mygo

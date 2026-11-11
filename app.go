@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -81,6 +82,10 @@ type App struct {
 	configPath  string
 	downloadDir string
 
+	// sidebarHidden folds the host list away (Ctrl+Shift+B). The width it had
+	// is kept, so showing it again restores what the user chose.
+	sidebarHidden bool
+
 	mu sync.Mutex
 }
 
@@ -103,6 +108,19 @@ type Tab struct {
 
 	LogPath string
 	Via     string
+
+	// FilesWidth is the SFTP panel's width for this tab. The splitter beside
+	// the panel drags it; clampFilesWidth keeps it to half the window.
+	FilesWidth float32
+
+	// Inactive holds output that arrived while this tab was not the visible
+	// one, so the tab bar can pulse until the user looks. It is set from the
+	// output pipeline's own goroutine and read on the UI thread.
+	Inactive atomic.Bool
+	// lastActivity is when the tab last showed something new, in Unix nanos.
+	lastActivity atomic.Int64
+	// flashUntil is when the blue "new output" dot stops blinking.
+	flashUntil time.Time
 
 	SearchOpen    bool
 	SearchQuery   string
@@ -157,6 +175,9 @@ func NewApp() (*App, error) {
 	}
 	if err := os.MkdirAll(downloadDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create download directory: %w", err)
+	}
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create log directory: %w", err)
 	}
 	if _, err := mgr.ConfigureSessionLogging(prefs.SessionLogging, logDir); err != nil {
 		log.Printf("goterm: session logging: %v", err)
@@ -330,7 +351,36 @@ func (a *App) selectTab(i int) {
 	a.active = i
 	if t := a.current(); t != nil {
 		t.Focus.Focus()
+		// Looking at the tab is the acknowledgement the pulse asked for.
+		t.Inactive.Store(false)
+		t.flashUntil = time.Time{}
 	}
+}
+
+// noteActivity is what the output pipeline calls: it records that a tab has
+// something new and, when the tab is not the visible one, asks the view to
+// blink its dot.
+func (a *App) noteActivity(t *Tab) {
+	if t == nil {
+		return
+	}
+	t.lastActivity.Store(time.Now().UnixNano())
+	if a.current() == t {
+		return
+	}
+	t.Inactive.Store(true)
+}
+
+// newOutputTabs lists the tabs whose dot should be lit: output arrived there
+// while it was hidden, and the user has not looked since.
+func (a *App) newOutputTabs() []*Tab {
+	var out []*Tab
+	for _, t := range a.tabs {
+		if t.Inactive.Load() {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // moveTab reorders the tab bar, keeping the same tab active and focused.
@@ -536,13 +586,29 @@ func friendlyError(err error) string {
 // startTerminal builds the emulator for a connected tab. It runs on the main
 // thread because creating a terminal sets up the view-side resources.
 func (a *App) startTerminal(t *Tab) {
-	conn, err := newTransferConn(t.Sess, encode.Parse(a.prefs.Encoding), a.downloadDir)
+	conn, err := newTransferConn(t.Sess, encode.Parse(a.prefs.Encoding), dialogs{app: a})
 	if err != nil {
 		t.Status = StatusFailed
 		t.Err = err.Error()
 		return
 	}
+	conn.notice = func(msg string) {
+		a.post(func() {
+			a.status = msg
+			if a.win != nil {
+				a.win.Invalidate()
+			}
+		})
+	}
 	conn.SetHighlight(a.prefs.Highlight)
+	// The tab bar marks every tab but the one being looked at. The check runs
+	// on the terminal's read goroutine, so it touches only atomics.
+	conn.tick = func() {
+		t.lastActivity.Store(time.Now().UnixNano())
+		if a.current() != t {
+			t.Inactive.Store(true)
+		}
+	}
 	term, err := terminal.New(terminal.Options{
 		Conn:       conn,
 		Font:       terminal.Font{Family: a.prefs.FontFamily, Size: float32(a.prefs.FontSize)},
