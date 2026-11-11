@@ -94,23 +94,30 @@ func TestLrzszUpload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
-	drain(conn)
+	t.Cleanup(func() { conn.Close() })
+	screen := drain(conn)
 
 	if _, err := conn.Write([]byte("rz\r")); err != nil {
 		t.Fatal(err)
 	}
 	target := filepath.Join(dir, "upload.txt")
 	deadline := time.Now().Add(30 * time.Second)
+	lastReport := time.Now()
 	for time.Now().Before(deadline) {
 		got, err := os.ReadFile(target)
 		if err == nil && bytes.Equal(got, payload) {
 			return
 		}
+		if time.Since(lastReport) > 2*time.Second {
+			lastReport = time.Now()
+			t.Logf("waiting: session %s, queue %d, screen %q", sess.Info().Status, sess.OutputQueueDepth(), screen.Bytes())
+		}
 		time.Sleep(50 * time.Millisecond)
 	}
 	got, err := os.ReadFile(target)
-	t.Fatalf("upload did not arrive: %d bytes, err %v, want %d", len(got), err, len(payload))
+	sessInfo := sess.Info()
+	t.Fatalf("upload did not arrive: %d bytes, err %v, want %d; terminal saw %q; session %+v",
+		len(got), err, len(payload), screen.Bytes(), sessInfo)
 }
 
 // TestLrzszDownload goes `sz` on the remote and checks the file arrives in the
@@ -128,8 +135,8 @@ func TestLrzszDownload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
-	drain(conn)
+	t.Cleanup(func() { conn.Close() })
+	screen := drain(conn)
 
 	if _, err := conn.Write([]byte("sz remote.bin\r")); err != nil {
 		t.Fatal(err)
@@ -144,7 +151,8 @@ func TestLrzszDownload(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	got, err := os.ReadFile(target)
-	t.Fatalf("download did not arrive: %d bytes, err %v, want %d", len(got), err, len(payload))
+	t.Fatalf("download did not arrive: %d bytes, err %v, want %d; terminal saw %q",
+		len(got), err, len(payload), screen.Bytes())
 }
 
 var _ = errors.New

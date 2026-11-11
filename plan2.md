@@ -62,7 +62,7 @@
 - `go test ./internal/sshx`（输出队列/背压/日志共存）通过。
 - `go test ./internal/highlight`：纯文本着色且字节不变、程序颜色优先、备用屏幕/绝对光标不接管、
   跨块 ESC、二进制与超长行直通、关闭后完全透传、Reader 小缓冲不丢字节。
-- ⚠️ ZMODEM 分支已启用但未自动化：sshtest 只提供 trzsz 服务端，`rz`/`sz` 仍需真机确认。
+- ZMODEM 两个方向都已自动化：`internal/sshtest/lrzsz` 提供远端 `rz`/`sz`，`TestLrzszUpload` 与 `TestLrzszDownload` 都在真实 SSH 上通过。
 - 真机：`--connect --files` 连本地 sshtest（SFTP 根目录预置 `logs/`、`readme.txt`），
   面板正确列出条目，终端与面板并排 68 列；截图只留在本地。
 - 真机：`--connect` 连本地 sshtest，窗口显示终端、直接发送按键即到达会话；截图只留在本地。
@@ -155,7 +155,7 @@
 | 需求 | 2.x 做法 | 状态 |
 | --- | --- | --- |
 | trzsz（trz/tsz）拦截 + 进度 | `transferConn` 用 `trzsz-go` 的 `TrzszFilter` 包住 SSH 字节流；进度条由过滤器画进终端 | ✅ |
-| ZMODEM `rz`/`sz` | `internal/zmodem` 纯 Go 实现（hex/bin 头、CRC16、ZFILE/ZDATA/ZEOF、ZRINIT 握手），上传/下载都弹原生保存框；真实 SSH 下 `rz` 上传已通过（`TestLrzszUpload`），`sz` 下载在接管字节流后仍未跑通（`TestLrzszDownload` 失败），帧收发单测均通过 | ⚠️ |
+| ZMODEM `rz`/`sz` | `internal/zmodem` 纯 Go 实现（hex/bin 头、CRC16、ZFILE/ZDATA/ZEOF、ZRINIT/ZRPOS 握手），方向在首帧判定，`sz` 下载先等远端宣告、`rz` 上传改由本机发起并按对端应答切方向；真实 SSH 下两个方向都已通过（`TestLrzszUpload`、`TestLrzszDownload`），传输期终端暂不渲染、进度写回屏显队列 | ✅ |
 | 拖文件进终端即上传 | `ui.DroppedFiles` + SFTP 上传 | ✅ |
 | 原生文件选择框 | mygo 桌面 API（`mygo.Dialog`） | ✅ |
 | 路径限制 / `../` 消毒 | `internal/sftpx` 不变 | ✅ |

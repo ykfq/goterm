@@ -99,6 +99,21 @@ type Sender struct {
 
 // Send runs one sz session.
 func (s *Sender) Send(files []File) error {
+	return s.start(files, s.handshake)
+}
+
+// SendAfterAsk opens the session by asking the peer for files (a ZRQINIT of
+// our own) and then expects the peer to be an `rz`. A remote `sz` answers that
+// ask with a bare ZRQINIT of its own, which is reported as
+// ErrPeerWantsDownload so the caller can switch to receiving instead.
+func (s *Sender) SendAfterAsk(files []File) error {
+	if _, err := s.Out.Write(hexHeader(ZRQINIT, nil)); err != nil {
+		return err
+	}
+	return s.start(files, s.handshakeAfterAsk)
+}
+
+func (s *Sender) start(files []File, shake func(*Reader) error) error {
 	if len(files) == 0 {
 		return errors.New("zmodem: nothing to send")
 	}
@@ -110,7 +125,7 @@ func (s *Sender) Send(files []File) error {
 		window = chunkSize * 4
 	}
 	r := NewReader(s.In)
-	if err := s.handshake(r); err != nil {
+	if err := shake(r); err != nil {
 		return err
 	}
 	for i, f := range files {
@@ -136,6 +151,7 @@ func (s *Sender) close(r *Reader) error {
 		}
 	}
 }
+
 // waitFor reads frames until one of want arrives.
 func (s *Sender) waitFor(r *Reader, timeout time.Duration, want ...byte) error {
 	for {
@@ -163,15 +179,19 @@ type Receiver struct {
 	On  Progress
 }
 
-// Receive runs one rz session and returns the names it saved.
+// Receive runs one rz session and returns the names it saved. The caller has
+// already seen and consumed the peer's opening frame (see lrzszPeer.accept),
+// so nothing is announced here: the receiver answers the ZFIN/ZRQINIT that
+// follows and waits for the ZFILE that comes with it.
 func (rcv *Receiver) Receive() ([]string, error) {
 	if rcv.On == nil {
 		rcv.On = noProgress
 	}
 	r := NewReader(rcv.In)
 	var saved []string
-	// Prompt peers that wait for our ZRQINIT to answer.
-	if _, err := rcv.Out.Write(hexHeader(ZRQINIT, nil)); err != nil {
+	// Answer the announcement that opened the transfer: the peer is waiting for
+	// a ZRINIT before it names the first file.
+	if _, err := rcv.Out.Write(hexHeader(ZRINIT, rzRinitArgs())); err != nil {
 		return nil, err
 	}
 	for {
@@ -246,6 +266,11 @@ func (rcv *Receiver) acceptFile(r *Reader, f *Frame) ([]string, error) {
 // rinitArgs is close enough to lrzsz's ZRINIT: no CAN, a 1 KiB receive
 // buffer, and a 1 KiB frame length.
 func rinitArgs() []byte { return []byte{0, 0, 1, 0, 0, 1} }
+
+// rzRinitArgs answers a peer that announced itself: the same flags, with the
+// "this side is the receiver" bit lrzsz looks for. Without it a peer that also
+// sent a bare ZRQINIT cannot tell us from another `sz` and both sides wait.
+func rzRinitArgs() []byte { return []byte{0, 1, 1, 0, 0, 1} }
 
 // splitNames splits a ZFILE argument string into the names it carries. The
 // name runs up to the first NUL; everything after it is lrzsz's metadata.

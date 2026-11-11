@@ -13,13 +13,13 @@ import (
 
 // Wire bytes.
 const (
-	ZDLE  = 0x18
-	ZPAD  = '*'
-	ZHEX  = 'B'
-	ZBIN  = 'A'
+	ZDLE   = 0x18
+	ZPAD   = '*'
+	ZHEX   = 'B'
+	ZBIN   = 'A'
 	ZBIN32 = 'C'
-	ZNAK  = 0x15
-	ZACK  = 6
+	ZNAK   = 0x15
+	ZACK   = 6
 )
 
 // Header and frame types, numbered as lrzsz numbers them.
@@ -48,6 +48,11 @@ const (
 
 // ErrCanceled reports that the peer gave up or the user closed the dialog.
 var ErrCanceled = errors.New("zmodem: canceled")
+
+// ErrPeerWantsDownload is how SendAfterAsk reports that the remote answered
+// its ZRQINIT with a bare ZRQINIT: the peer is an `sz` waiting to send, not
+// the `rz` that was expected. The caller switches direction.
+var ErrPeerWantsDownload = errors.New("zmodem: peer wants to send")
 
 // errNotFrame says the bytes at the front of the stream are not a frame. The
 // caller keeps reading; a real peer skips line noise between frames.
@@ -127,6 +132,33 @@ func (r *Reader) consume(n int) {
 		n = len(r.buf)
 	}
 	r.buf = r.buf[n:]
+}
+
+// Buffered hands back the bytes the reader has already pulled from the stream
+// but not yet parsed. A caller that only wanted a peek at the first frame
+// continues from here instead of losing the look-ahead.
+func (r *Reader) Buffered() []byte {
+	out := r.buf
+	r.buf = nil
+	return out
+}
+
+// ParseFirst reads one frame that starts at the front of start and returns the
+// bytes that follow it unread. rest is consulted only when the frame runs past
+// what start holds, so a peek never steals more of the stream than the frame
+// needs. Noise before the frame yields errNotFrame.
+func ParseFirst(start []byte, rest io.Reader) (*Frame, []byte, error) {
+	r := &Reader{buf: append([]byte{}, start...), r: rest}
+	for {
+		f, err := r.tryFrame()
+		if err == nil {
+			return f, r.Buffered(), nil
+		}
+		if errors.Is(err, errNotFrame) {
+			return nil, nil, err
+		}
+		return nil, nil, err
+	}
 }
 
 // readByte consumes one byte.
@@ -291,6 +323,7 @@ func (r *Reader) readHexHeader() (typ byte, args []byte, want uint16, err error)
 	args = append([]byte{}, raw[1:n-2]...)
 	return typ, args, want, nil
 }
+
 // subpackets reads a ZBIN data frame: escaped bytes up to DLE <kind> DLE h
 // DLE l, repeated until a kind ends the frame.
 func (r *Reader) subpackets() ([]byte, error) {
