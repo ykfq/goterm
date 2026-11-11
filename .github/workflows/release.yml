@@ -47,8 +47,15 @@ jobs:
           if ($declared -ne $v) {
             throw "tag $raw does not match mygo.json version $declared"
           }
-          "tag=$raw"  | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "semver=$v" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          # GITHUB_OUTPUT must be written as plain UTF-8 with no BOM: a BOM makes
+          # the first key arrive as "\ufefftag", the runner cannot find it, and
+          # every later '${{ steps.version.outputs.x }}' expands to nothing.
+          function Set-Output([string]$k, [string]$v) {
+            if (-not $env:GITHUB_OUTPUT) { throw 'GITHUB_OUTPUT is not set' }
+            [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "$k=$v`n", (New-Object System.Text.UTF8Encoding($false)))
+          }
+          Set-Output 'tag' $raw
+          Set-Output 'semver' $v
           Write-Host "releasing $raw"
 
       - name: Stamp the version into the source
@@ -89,9 +96,13 @@ jobs:
           $sha = (Get-FileHash "out\$name.zip" -Algorithm SHA256).Hash.ToLower()
           "$md5  $name.zip`n"  | Out-File -FilePath "out\$name.zip.md5" -Encoding ascii -NoNewline
           "$sha  $name.zip`n"  | Out-File -FilePath "out\$name.zip.sha256" -Encoding ascii -NoNewline
-          "md5=$md5"    | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "sha256=$sha" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "name=$name"  | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          function Set-Output([string]$k, [string]$v) {
+            if (-not $env:GITHUB_OUTPUT) { throw 'GITHUB_OUTPUT is not set' }
+            [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "$k=$v`n", (New-Object System.Text.UTF8Encoding($false)))
+          }
+          Set-Output 'md5' $md5
+          Set-Output 'sha256' $sha
+          Set-Output 'name' $name
           Get-ChildItem out | Format-Table Name, Length | Out-String | Write-Host
 
       - name: Summarise
@@ -111,7 +122,6 @@ jobs:
             "Built from ${{ github.sha }} with Go and mygo. No WebView2, no Node."
           )
           $lines -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
-
       - uses: actions/upload-artifact@v4
         with:
           name: goterm-${{ steps.version.outputs.tag }}-windows-x64
