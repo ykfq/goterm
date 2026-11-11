@@ -27,7 +27,7 @@ import (
 )
 
 // Version is what the status bar and About show.
-const Version = "2.0.0"
+const Version = "2.1.0"
 
 // App is GoTerm's state. In 1.x this type was a Wails service and the frontend
 // called it over IPC; now it is an ordinary Go value that the view reads on the
