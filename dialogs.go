@@ -15,6 +15,16 @@ import (
 // painting because it reads through a different goroutine.
 type dialogs struct{ app *App }
 
+// DefaultDownloadFolder answers a connect without touching the screen: the
+// configured downloads directory if there is one, else void so the dialog
+// appears only when a transfer actually needs a place to put files.
+func (d dialogs) DefaultDownloadFolder() (string, error) {
+	if d.app == nil {
+		return "", nil
+	}
+	return d.app.downloadDir, nil
+}
+
 func (d dialogs) ChooseDownloadFolder(suggested string) (string, error) {
 	if d.app == nil {
 		return suggested, nil

@@ -63,6 +63,9 @@ type Chooser interface {
 	// ChooseUpload returns local paths for an upload. dirOnly asks for a
 	// folder instead of files (a recursive send).
 	ChooseUpload(dirOnly bool) ([]string, error)
+	// DefaultDownloadFolder returns the folder a transfer lands in without
+	// asking. It must never open a dialog: the terminal calls it on connect.
+	DefaultDownloadFolder() (string, error)
 }
 
 // sessionIn is the filter's view of the remote PTY's input: the normal path
@@ -151,8 +154,12 @@ func newTransferConn(s *sshx.Session, enc encode.Name, chooser Chooser) (*transf
 	c.filter = trzsz.NewTrzszFilter(inR, outW, sessionIn{s}, raw, trzsz.TrzszOptions{
 		TerminalColumns: 100,
 	})
+	// trzsz needs a default landing folder before it can accept a tsz, but
+	// asking for one here would pop a modal dialog on every connect. Use the
+	// configured downloads folder; a transfer only asks the user when it has
+	// no default to fall back on.
 	if chooser != nil {
-		if dir, err := chooser.ChooseDownloadFolder(""); err == nil && dir != "" {
+		if dir, err := chooser.DefaultDownloadFolder(); err == nil && dir != "" {
 			c.filter.SetDefaultDownloadPath(dir)
 		}
 	}

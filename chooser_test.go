@@ -15,6 +15,8 @@ type fixedChooser struct {
 
 func (f fixedChooser) ChooseDownloadFolder(string) (string, error) { return f.dir, nil }
 
+func (f fixedChooser) DefaultDownloadFolder() (string, error) { return f.dir, nil }
+
 func (f fixedChooser) ChooseUpload(bool) ([]string, error) {
 	if len(f.upload) == 0 {
 		return nil, errors.New("upload not scripted")
