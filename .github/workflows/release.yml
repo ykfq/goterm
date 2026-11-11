@@ -110,18 +110,21 @@ jobs:
         run: |
           $tag  = '${{ steps.version.outputs.tag }}'
           $name = '${{ steps.sums.outputs.name }}'
+          $md5  = '${{ steps.sums.outputs.md5 }}'
+          $sha  = '${{ steps.sums.outputs.sha256 }}'
           $lines = @(
             "### GoTerm $tag (Windows x64, native UI)",
             '',
             "| | |",
             "| --- | --- |",
             "| file | $name.zip |",
-            "| MD5 | $($steps.sums.outputs.md5) |",
-            "| SHA256 | $($steps.sums.outputs.sha256) |",
+            "| MD5 | $md5 |",
+            "| SHA256 | $sha |",
             '',
             "Built from ${{ github.sha }} with Go and mygo. No WebView2, no Node."
           )
           $lines -join "`n" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
       - uses: actions/upload-artifact@v4
         with:
           name: goterm-${{ steps.version.outputs.tag }}-windows-x64
