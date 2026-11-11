@@ -39,10 +39,26 @@ jobs:
       - name: Resolve the version
         id: version
         shell: pwsh
+        env:
+          # github.event.inputs is empty rather than undefined on a tag push, so
+          # this expression resolves for both trigger types.
+          INPUT_TAG: ${{ github.event.inputs.tag }}
         run: |
-          $raw = if ('${{ github.event_name }}' -eq 'workflow_dispatch') { '${{ inputs.tag }}' } else { $env:GITHUB_REF_NAME }
-          if (-not $raw) { throw 'no tag to release' }
-          $v = $raw.TrimStart('v')
+          # Resolve the tag from runtime variables only, so neither event path
+          # needs an expression that is absent for the other one.
+          #
+          # This step used to branch on '${{ github.event_name }}' and read
+          # '${{ inputs.tag }}'. On a tag push there is no inputs context, and an
+          # expression that cannot be resolved is what stopped the release:
+          # the failure showed up as a null-method exception on the next line
+          # rather than a message anyone could act on.
+          $raw = if ($env:GITHUB_EVENT_NAME -eq 'workflow_dispatch') { $env:INPUT_TAG } else { $env:GITHUB_REF_NAME }
+          if ([string]::IsNullOrWhiteSpace($raw)) {
+            throw "no tag to release (event=$env:GITHUB_EVENT_NAME ref=$env:GITHUB_REF name=$env:GITHUB_REF_NAME)"
+          }
+          $raw = $raw.Trim()
+          $v = $raw -replace '^v', ''
+          if ([string]::IsNullOrWhiteSpace($v)) { throw "tag '$raw' has no version in it" }
           $declared = (Get-Content mygo.json -Raw | ConvertFrom-Json).version
           if ($declared -ne $v) {
             throw "tag $raw does not match mygo.json version $declared"
