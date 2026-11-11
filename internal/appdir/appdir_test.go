@@ -61,7 +61,14 @@ func TestDefaultPrefersTheExecutableFolder(t *testing.T) {
 		t.Skip("the executable's folder is not writable here")
 	}
 	exe, _ := os.Executable()
-	if filepath.Dir(got) != filepath.Dir(exe) {
+	// PortableDir resolves symlinks and, on Windows, 8.3 short names (the
+	// runner's %TEMP% can hold "JIANGZ~1" while the real path says
+	// "jiangzhouling"). Compare against the same normalised form rather than
+	// the raw executable path.
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	if !strings.EqualFold(filepath.Dir(got), filepath.Dir(exe)) {
 		t.Fatalf("DefaultDir = %q, want the executable's folder beside %q", got, exe)
 	}
 	if filepath.Base(got) != "data" {
