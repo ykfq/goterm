@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // sandbox points the "user config" lookup at a temp dir and clears GOTERM_DIR,
@@ -17,16 +18,37 @@ import (
 // per-user folder that would be used.
 func sandbox(t *testing.T) string {
 	t.Helper()
-	base := t.TempDir()
+	dir := tempDir(t)
 	if os.PathSeparator == '\\' {
-		t.Setenv("APPDATA", base)
+		t.Setenv("APPDATA", dir)
 	} else {
-		t.Setenv("XDG_CONFIG_HOME", base)
+		t.Setenv("XDG_CONFIG_HOME", dir)
 	}
 	t.Setenv("GOTERM_DIR", "")
 	Reset()
 	t.Cleanup(Reset)
-	return filepath.Join(base, "goterm")
+	return filepath.Join(dir, "goterm")
+}
+
+// tempDir is t.TempDir with a shove: on Windows a directory that was just
+// scanned can refuse to be removed for a few milliseconds, and testing's own
+// cleanup reports that as "directory is not empty". Retrying here keeps a
+// timing artefact from failing an otherwise correct test.
+func tempDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	t.Cleanup(func() {
+		for i := 0; i < 20; i++ {
+			if _, err := os.Stat(dir); os.IsNotExist(err) {
+				return
+			}
+			if err := os.RemoveAll(dir); err == nil {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
+	return dir
 }
 
 func TestDefaultPrefersTheExecutableFolder(t *testing.T) {
@@ -74,7 +96,7 @@ func TestDirCreatesWhateverItPicks(t *testing.T) {
 
 func TestSettingDecidesTheNextDir(t *testing.T) {
 	user := sandbox(t)
-	chosen := filepath.Join(t.TempDir(), "state-on-another-disk")
+	chosen := filepath.Join(tempDir(t), "state-on-another-disk")
 
 	if err := SetDir(chosen); err != nil {
 		t.Fatalf("SetDir: %v", err)
@@ -97,7 +119,7 @@ func TestSettingDecidesTheNextDir(t *testing.T) {
 
 func TestEmptySettingGoesBackToTheDefault(t *testing.T) {
 	user := sandbox(t)
-	chosen := filepath.Join(t.TempDir(), "elsewhere")
+	chosen := filepath.Join(tempDir(t), "elsewhere")
 	if err := SetDir(chosen); err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +140,7 @@ func TestEmptySettingGoesBackToTheDefault(t *testing.T) {
 
 func TestChoosingTheDefaultClearsThePointer(t *testing.T) {
 	user := sandbox(t)
-	if err := SetDir(filepath.Join(t.TempDir(), "x")); err != nil {
+	if err := SetDir(filepath.Join(tempDir(t), "x")); err != nil {
 		t.Fatal(err)
 	}
 	dflt, err := DefaultDir()
@@ -142,11 +164,11 @@ func TestChoosingTheDefaultClearsThePointer(t *testing.T) {
 
 func TestEnvVarBeatsTheSetting(t *testing.T) {
 	sandbox(t)
-	chosen := filepath.Join(t.TempDir(), "chosen")
+	chosen := filepath.Join(tempDir(t), "chosen")
 	if err := SetDir(chosen); err != nil {
 		t.Fatal(err)
 	}
-	env := filepath.Join(t.TempDir(), "from-env")
+	env := filepath.Join(tempDir(t), "from-env")
 	t.Setenv("GOTERM_DIR", env)
 	Reset()
 
@@ -161,7 +183,7 @@ func TestEnvVarBeatsTheSetting(t *testing.T) {
 		t.Fatalf("PendingDir = %q, want %q", pending, env)
 	}
 	// And the setting itself refuses, instead of writing a value that loses.
-	if err := SetDir(filepath.Join(t.TempDir(), "ignored")); err != ErrEnvOverride {
+	if err := SetDir(filepath.Join(tempDir(t), "ignored")); err != ErrEnvOverride {
 		t.Fatalf("SetDir with GOTERM_DIR set = %v, want ErrEnvOverride", err)
 	}
 	if got, _ := Configured(); got != chosen {
@@ -189,7 +211,7 @@ func TestCorruptPointerFallsBackToTheDefault(t *testing.T) {
 func TestSetDirRefusesAnUnusablePath(t *testing.T) {
 	user := sandbox(t)
 	// A regular file cannot be a parent directory.
-	file := filepath.Join(t.TempDir(), "a-file")
+	file := filepath.Join(tempDir(t), "a-file")
 	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -205,7 +227,7 @@ func TestSetDirRefusesAnUnusablePath(t *testing.T) {
 // promises: hosts, secrets, settings and the log folder all under one folder.
 func TestPathsStayTogetherUnderTheChosenDir(t *testing.T) {
 	sandbox(t)
-	chosen := t.TempDir()
+	chosen := tempDir(t)
 	if err := SetDir(chosen); err != nil {
 		t.Fatal(err)
 	}

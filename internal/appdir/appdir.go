@@ -31,6 +31,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ykfq/goterm/internal/atomicfile"
 )
@@ -223,6 +224,9 @@ func SetDir(path string) error {
 
 // probeWritable proves the directory accepts a file, which MkdirAll alone does
 // not (an existing read-only folder, a network share with no create right).
+// The probe is a hidden file that is removed before returning; on Windows a
+// delete can briefly fail while a scanner still holds it, so the name is
+// retried and a leftover probe is not treated as "unwritable".
 func probeWritable(dir string) error {
 	f, err := os.CreateTemp(dir, ".goterm-write-test-*")
 	if err != nil {
@@ -230,13 +234,23 @@ func probeWritable(dir string) error {
 	}
 	name := f.Name()
 	if err := f.Close(); err != nil {
-		os.Remove(name)
+		removeQuietly(name)
 		return fmt.Errorf("%s is not writable: %w", dir, err)
 	}
-	if err := os.Remove(name); err != nil {
-		return fmt.Errorf("%s is not writable: %w", dir, err)
-	}
+	removeQuietly(name)
 	return nil
+}
+
+// removeQuietly deletes a probe file, retrying briefly. A file that cannot be
+// deleted yet still proves the directory accepted it, so failure here is not
+// reported: the next run creates a fresh name anyway.
+func removeQuietly(name string) {
+	for i := 0; i < 5; i++ {
+		if err := os.Remove(name); err == nil || errors.Is(err, os.ErrNotExist) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func samePath(a, b string) bool {
