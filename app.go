@@ -88,7 +88,7 @@ type App struct {
 	sidebarHidden bool
 
 	// markSrc is the window's title-bar icon, decoded once from the embedded
-	// monogram.
+	// artwork.
 	markSrc ui.ImageSource
 
 	mu sync.Mutex
@@ -279,10 +279,9 @@ func (a *App) Open() {
 		TitleBarHeight:  30,
 		AutoHideMenuBar: true,
 	})
-	// The monogram, not the wordmark: this is the 16-pixel title bar icon, where
-	// a 2.2:1 logo is a grey band. Explorer still shows the full mark from the
-	// executable's resources.
-	if err := a.win.SetIcon(appSmallIconPNG); err != nil {
+	// The same mark mygo bakes into the executable, so the window matches the
+	// file it was started from.
+	if err := a.win.SetIcon(appIconPNG); err != nil {
 		log.Printf("goterm: window icon: %v", err)
 	}
 	a.installMenu()

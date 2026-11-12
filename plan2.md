@@ -54,11 +54,11 @@
   停发条件从「键盘闲置到窗口」改为「闲置到窗口 **且** 窗口不可见（`Manager.SetDetached`，
   由 `OnFocus/OnBlur/IsMinimized` 上报）」。可见即继续防御，离开才放弃租约（红线 8 仍然成立）。
   决策与证据见 `docs/DECISIONS.md`「Keepalives」一节。
-- **应用图标**：`resources/icon.png`（1024²，mygo 打进 exe，Explorer/开始菜单用完整 GT 商标）；
-  `resources/icon-small.png` 是同一设计的方形单字母徽标（G + 终端徽章），
-  `Window.SetIcon` 用它做标题栏/任务栏小图标 —— 2.2:1 的字标在 16px 标题栏里只剩一条灰色窄带，
-  方形 G 才能填满。两张图都由 `resources/goterm.icon2.jpg` 裁切生成，未重绘；
-  `resourcesExclude` 让设计稿 jpg 与 icon-small 只进二进制、不随 exe 发布。
+- **应用图标**：`resources/icon.png`（1024²）由 `resources/goterm.icon.jpg` 紧贴墨水裁切
+  （2% 安全边）生成，未重绘；mygo 把它打进 exe，`icon.go` 同步 embed、`Open()` 用它设窗口图标。
+  新版构图就是 "G + 终端徽章"（1106×716），方形图标里 G 占比足够，所以之前为 GT 字标加的
+  单字母小图（`icon-small.png`）已删除，一套图各尺寸通用。
+  `resourcesExclude: ["*.jpg"]` 让设计稿只进二进制、不随 exe 发布。
 - **自定义高亮关键字**：`settings.json` 的 `highlightWords`（≤64 条，单条 ≤64B，去重限幅），
   设置 → 行为 里逐行编辑，**即时作用到已开会话**（`SetWords` 走和 `SetHighlight` 同一条
   接口探测路径）。ASCII 词只整词匹配（ERR 不打错 error 的半个词），含非 ASCII（日文/中文等）

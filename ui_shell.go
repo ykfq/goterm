@@ -336,13 +336,12 @@ func (a *App) titleBar(c *ui.Context) {
 	ui.Divider(c)
 }
 
-// mark is the window's own icon, decoded once. It is the monogram rather than
-// the wordmark: 18 pixels in a title bar is where a 2.2:1 logo turns to mush.
+// mark is the window's own icon, decoded once for the title row.
 func (a *App) mark() ui.ImageSource {
 	if a.markSrc != nil {
 		return a.markSrc
 	}
-	src, err := ui.DecodeImage(appSmallIconPNG)
+	src, err := ui.DecodeImage(appIconPNG)
 	if err != nil {
 		return nil
 	}
