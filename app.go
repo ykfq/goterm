@@ -267,8 +267,22 @@ func (a *App) Open() {
 		StateKey:  "main",
 		Content:   ui.View(a.view),
 	})
+	if err := a.win.SetIcon(appIconPNG); err != nil { // the same artwork mygo bakes into the exe
+		log.Printf("goterm: window icon: %v", err)
+	}
 	a.installMenu()
 	a.win.OnClosed(func() { a.Close() })
+
+	// Keepalive defends whatever is on screen. A bastion hangs up a connection
+	// that has sent nothing for long enough whatever the user is doing with the
+	// keyboard, so a quiet-but-visible window must keep probing; only a window
+	// nobody can see is allowed to fall silent (see sshx.SetDetached). Minimising
+	// does not always blur the window on every platform, so both signals count.
+	syncAway := func() {
+		a.mgr.SetDetached(!a.win.IsFocused() || a.win.IsMinimized())
+	}
+	a.win.OnFocus(syncAway)
+	a.win.OnBlur(syncAway)
 
 	if hosts := a.hosts.List(); len(hosts) > 0 && a.selectedHost == "" {
 		if h, ok := a.hosts.Get(a.prefs.LastHostID); ok {
@@ -601,6 +615,7 @@ func (a *App) startTerminal(t *Tab) {
 		})
 	}
 	conn.SetHighlight(a.prefs.Highlight)
+	conn.SetWords(a.prefs.HighlightWords)
 	// The tab bar marks every tab but the one being looked at. The check runs
 	// on the terminal's read goroutine, so it touches only atomics.
 	conn.tick = func() {
@@ -726,6 +741,9 @@ func (a *App) applySettings() {
 		}
 		if sw, ok := t.Conn.(interface{ SetHighlight(bool) }); ok {
 			sw.SetHighlight(a.prefs.Highlight)
+		}
+		if sw, ok := t.Conn.(interface{ SetWords([]string) }); ok {
+			sw.SetWords(a.prefs.HighlightWords)
 		}
 	}
 	if err := a.prefs.Save(a.configPath); err != nil {

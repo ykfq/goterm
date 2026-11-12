@@ -148,4 +148,3 @@ func TestDecodingReaderSwitchesMidStream(t *testing.T) {
 		t.Fatalf("after switching to UTF-8 read = %q, %v", buf[:n], err)
 	}
 }
-

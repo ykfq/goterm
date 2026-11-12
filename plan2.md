@@ -48,10 +48,30 @@
   编译器彩色诊断一律不接管。覆盖 `cat`/`tail`/`head`/`ps`/`tee` 与普通日志的关键字、级别、
   IP/URL/时间、shell/bash 命令、syslog 与 nginx 日志/配置；设置里可即时开关。
 
+**新增（2026-11-12，开发环境迁到 Linux）**
+
+- **保活制度修正**（JumpServer 60 分钟断线）：默认间隔 45s→**15s**，探测超时独立成 5s；
+  停发条件从「键盘闲置到窗口」改为「闲置到窗口 **且** 窗口不可见（`Manager.SetDetached`，
+  由 `OnFocus/OnBlur/IsMinimized` 上报）」。可见即继续防御，离开才放弃租约（红线 8 仍然成立）。
+  决策与证据见 `docs/DECISIONS.md`「Keepalives」一节。
+- **应用图标**：`resources/icon.png`（1024²，mygo 打进 exe）；`icon.go` 同步 embed，
+  `Window.SetIcon` 让裸 `go build` 也有图标。素材里的水印按像素分类剥除
+  （描内/描外投票 + 孔洞回填），16/32/48 px 可辨识。
+- **自定义高亮关键字**：`settings.json` 的 `highlightWords`（≤64 条，单条 ≤64B，去重限幅），
+  设置 → 行为 里逐行编辑，**即时作用到已开会话**（`SetWords` 走和 `SetHighlight` 同一条
+  接口探测路径）。ASCII 词只整词匹配（ERR 不打错 error 的半个词），含非 ASCII（日文/中文等）
+  按子串匹配；不覆盖内置规则与程序自己的颜色。
+- **Linux 开发环境**：`build/test.sh`（vet + 全测试）；Go 1.27 工具链 +
+  `https://mirrors.tencent.com/go` 写在用户级 `go env`，不入库。
+  **Linux 已知问题（非本项目）**：mygo 的 libghostty-vt 与 pango 在同一进程里会段错误
+  （Ghostty 静态链了自己的排版库）。`test.sh` 用 `MYGO_GHOSTTY_VT=/nonexistent`
+  让终端引擎类测试在 Linux 上确定性 SKIP（与库缺失时同一出口）；Windows/macOS 不受影响，
+  终端插件由 CI 在 Windows 上验证。
+
 **尚未落地**
 
 - P4：单词分隔符可配；回看大小对已开终端需重连（终端库没有运行时 setter）。
-- 高亮自定义关键字 / `.msyn` 导入（内置规则已覆盖常见纯文本输出；如需自定义再加）。
+- 高亮 `.msyn` 导入（自定义关键字已落地；`.msyn` 文件解析仍未做，内置 + 自定义已覆盖日常）。
 - P5：automation 端到端脚本、CI 首次全量验证。
 
 **验证记录**
@@ -68,6 +88,15 @@
 - 真机：`--connect` 连本地 sshtest，窗口显示终端、直接发送按键即到达会话；截图只留在本地。
 - 打包：`go tool mygo build -platform windows/amd64` 产出 `GoTerm.exe` + `ghostty-vt.dll`；
   用该产物连 sshtest，日志文件 `logs/goterm-<时间>-tester_127.0.0.1_2222.log` 正常写入。
+- （2026-11-12）bastion 制度：`sshtest` 新增 `HangUpAfterSilence` 模拟堡垒机静默断连，
+  `TestJumpHostKeepsAQuietSessionAlive` / `TestQuietTargetKeepsItsSession` 在无一次按键的
+  三个窗口后仍 connected 且 PTY 零增量；对照面 `watch()` 证明策略确实会杀（关保活必死），
+  `TestAKeepaliveSlowerThanTheBastionLosesTheSession` 证明慢于窗口的间隔救不回来。
+  idle 全套改写为双条件（可见不停、离开才停），`go test ./internal/sshx` 全绿。
+- （2026-11-12）Linux：`./build/test.sh` 全绿（Go 1.27.4 + 腾讯镜像）；
+  交叉编译产出可跑的 `GoTerm.exe` 已验证。
+- （2026-11-12）自定义关键字：`internal/highlight/words_test.go`（大小写、整词、CJK 子串、
+  不压内置、长词优先、中途换表即生效）+ settings 解析/限幅/落盘往返测试。
 
 ## 1. 架构对照
 
@@ -100,7 +129,7 @@
 | 主机密钥 TOFU / 不一致拒连 / forget | `HostKeyStore` 不变；新增 Known hosts 面板 | 🚧 |
 | 半开连接 / 握手超时 | `internal/sshx` 不变 | ✅ |
 | 保活不发回车（红线 1） | 不变 | ✅ |
-| 连接级闲置窗口、anti-idle | 不变 | ✅ |
+| 连接级闲置窗口、anti-idle | 闲置 **且** 不可见才停发（SetDetached）；默认 15s，超时独立 5s | ✅ 🧪 |
 
 ### 2.2 渲染、配色与高亮（plan.md §3）
 
@@ -110,7 +139,7 @@
 | GPU 渲染 | mygo D3D11/Metal/OpenGL，VT 自绘 | ✅ |
 | 关键字高亮（MobaXterm filter） | `internal/highlight`：只装饰“不含 ESC 的纯文本行”，跟踪备用屏幕/绝对光标/程序 SGR；`cat`/`tail`/`head`/`ps`/`tee` 与普通日志着色，`vim`/`less`/`top` 等全屏程序不接管 | ✅ |
 | `grep --color` 不覆盖 | 程序自己设置了前景/背景/反显时，该行不再注入颜色；粗体/下划线仍可叠加 | ✅ |
-| 自定义关键字 / `.msyn` 导入 | 内置 shell/bash/syslog/nginx/data/words 规则；自定义规则尚未暴露到界面 | 🚧 |
+| 自定义关键字 / `.msyn` 导入 | 内置 shell/bash/syslog/nginx/data/words 规则；自定义关键字走 `highlightWords`（设置页逐行编辑，即时生效，ASCII 整词 / 非 ASCII 子串）；`.msyn` 导入未做 | ✅ |
 | 字体只列等宽 | `internal/fonts` 不变，`ui.RegisterFont`/`terminal.Font` | ✅ |
 | 单词分隔符可配 | Ghostty 选择规则固定 | ⚠️ |
 | 自定义背景色 / 主题 | `terminal.Theme` + Ghostty 主题列表 | 🚧 |
@@ -258,6 +287,9 @@ go vet ./...
 gofmt -l .
 go tool mygo build          # 或 wails 替代品：mygo build
 ```
+
+Linux 开发机上一条命令替代前三行：`./build/test.sh`（内含终端引擎的 pango 冲突规避，
+见 §0.1 的说明）。
 
 - 纯逻辑：Go 单元测试（SSH、存储、设置、转码、背压）。
 - 视图：`ui.NewTester` 点击/输入/断言文本与焦点。

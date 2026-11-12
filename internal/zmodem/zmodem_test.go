@@ -47,4 +47,3 @@ func TestNoiseIsSkipped(t *testing.T) {
 		t.Fatalf("type %d", f.Type)
 	}
 }
-
