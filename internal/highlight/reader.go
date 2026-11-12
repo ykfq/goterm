@@ -25,6 +25,10 @@ func NewReader(src io.Reader) *Reader {
 // interrupted; only what gets inserted into it changes.
 func (r *Reader) SetEnabled(on bool) { r.h.SetEnabled(on) }
 
+// SetWords replaces the user's custom highlight keywords, effective from the
+// next line of output.
+func (r *Reader) SetWords(words []string) { r.h.SetWords(words) }
+
 func (r *Reader) Read(p []byte) (int, error) {
 	for len(r.out) == 0 {
 		if r.pendingErr != nil {

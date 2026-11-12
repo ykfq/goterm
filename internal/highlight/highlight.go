@@ -21,6 +21,7 @@ package highlight
 
 import (
 	"strings"
+	"sync"
 	"sync/atomic"
 	"unicode/utf8"
 )
@@ -69,6 +70,12 @@ type Highlighter struct {
 	// it while the terminal is reading.
 	enabled atomic.Bool
 
+	// words are the user's own keywords, compiled by SetWords. The settings
+	// dialog writes them while the terminal's read goroutine paints lines,
+	// so the slice is swapped whole under wordsMu and read once per line.
+	wordsMu sync.Mutex
+	words   []wordRule
+
 	// Scratch buffers, reused across lines to keep large outputs allocation
 	// free once the terminal has seen its widest line.
 	mask  []byte
@@ -93,6 +100,20 @@ func New() *Highlighter {
 // SetEnabled turns decoration on or off mid-stream. The stream itself is never
 // interrupted; only what gets inserted into it changes.
 func (h *Highlighter) SetEnabled(on bool) { h.enabled.Store(on) }
+
+// SetWords replaces the user's custom keywords, effective from the next line.
+// Like SetEnabled it never interrupts the stream. Built-in rules keep running;
+// a custom word that lands where the program or a built-in rule already put
+// colour loses, because competing colours on one span read as a bug.
+func (h *Highlighter) SetWords(words []string) {
+	rules := compileWords(words)
+	// No Reset: the stream state (style, screen mode) has nothing to do with
+	// the word list, and dropping it would replay a cleared SGR state and let
+	// an open program colour leak until the next sequence arrives.
+	h.wordsMu.Lock()
+	h.words = rules
+	h.wordsMu.Unlock()
+}
 
 // Reset forgets the stream state after a clear, a reconnect, or a tab swap.
 func (h *Highlighter) Reset() {
@@ -263,6 +284,12 @@ func (h *Highlighter) paintLine(line string) string {
 	}
 	for _, set := range h.always {
 		applySet(line, set.rules, mask, &h.edits)
+	}
+	h.wordsMu.Lock()
+	words := h.words
+	h.wordsMu.Unlock()
+	if len(words) > 0 {
+		applyWords(line, words, mask, &h.edits)
 	}
 	if len(h.edits) == 0 {
 		return line

@@ -4,6 +4,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // SGR sequences. Colour is the only thing a rule changes; everything that was
@@ -342,4 +343,100 @@ func whitespaceAt(s string, i int) bool {
 		return true
 	}
 	return s[i] == ' ' || s[i] == '\t'
+}
+
+// User keywords. These are matched by hand rather than by regexp: the matching
+// must ignore ASCII case, must not start or end inside a word when the keyword
+// is plain ASCII ("ERR" colours ERROR but not PERROR), and must still work for
+// keywords in scripts without word separators (CJK), where "内存" has to match
+// inside a run of Chinese text. A regexp alternative would need per-word
+// quoting and per-script boundary classes for less precision, not more.
+
+type wordRule struct {
+	match []byte // keyword bytes
+	lower []byte // match, with ASCII folded down
+	bound bool   // require non-word bytes around an all-ASCII match
+}
+
+// compileWords prepares the user's keywords for applyWords. Longest first, so
+// "conn refused" wins over a shorter word nested in it; order otherwise keeps
+// the user's.
+func compileWords(words []string) []wordRule {
+	rules := make([]wordRule, 0, len(words))
+	for _, w := range words {
+		if w == "" {
+			continue
+		}
+		r := wordRule{match: []byte(w), lower: make([]byte, len(w)), bound: true}
+		for i := 0; i < len(w); i++ {
+			c := w[i]
+			if c < utf8.RuneSelf && !isWordByte(c) {
+				r.bound = false // punctuation inside the keyword: plain substring
+			}
+			if c >= 'A' && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+			if c >= utf8.RuneSelf {
+				r.bound = false
+			}
+			r.lower[i] = c
+		}
+		rules = append(rules, r)
+	}
+	sort.SliceStable(rules, func(i, j int) bool {
+		return len(rules[i].match) > len(rules[j].match)
+	})
+	return rules
+}
+
+func isWordByte(c byte) bool {
+	return c == '_' ||
+		('0' <= c && c <= '9') ||
+		('a' <= c && c <= 'z') ||
+		('A' <= c && c <= 'Z')
+}
+
+// applyWords colours the user's keywords. Words claiming a span a built-in
+// rule already coloured are skipped, same as rule sets: two colours on one
+// span read as broken, and the built-in matched more specifically.
+func applyWords(line string, words []wordRule, mask []byte, edits *[]edit) {
+	// The haystack is scanned a byte at a time rather than with strings.Index:
+	// the keyword is lowercased, the line is not, and skipping to the next
+	// literal hit would miss "Err" while hunting "err".
+	for _, w := range words {
+		for i := 0; i+len(w.match) <= len(line); i++ {
+			end := i + len(w.match)
+			if !bytesEqualFold(line[i:end], w.lower) {
+				continue
+			}
+			if w.bound && (i > 0 && isWordByte(line[i-1]) || end < len(line) && isWordByte(line[end])) {
+				continue
+			}
+			if claimed(mask, i, end) {
+				continue
+			}
+			for j := i; j < end; j++ {
+				mask[j] = 1
+			}
+			*edits = append(*edits, edit{start: i, end: end, sgr: brightMagenta})
+		}
+	}
+}
+
+// bytesEqualFold reports whether s equals the already-lowercased want,
+// ignoring ASCII case in s.
+func bytesEqualFold(s string, want []byte) bool {
+	if len(s) != len(want) {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != want[i] {
+			return false
+		}
+	}
+	return true
 }

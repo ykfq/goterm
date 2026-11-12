@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/egoist/mygo"
@@ -112,6 +113,21 @@ func (a *App) settingsBehaviour(c *ui.Context) {
 				}
 			})
 			ui.Text(c, "Colours errors, warnings, addresses and commands in plain output (cat, tail, head, ps, tee). Full-screen programs such as vim, less and top keep their own colours.").
+				FontSize(11).TextColor(c.Theme().TextMuted)
+
+			words := strings.Join(a.prefs.HighlightWords, "\n")
+			ui.Field(c, "Your own keywords, one per line", func() {
+				area := ui.TextArea(c, &words)
+				area.Height(72)
+				if area.Changed() {
+					list := settings.ParseHighlightWords(words)
+					if !slices.Equal(list, a.prefs.HighlightWords) {
+						a.prefs.HighlightWords = list
+						a.applySettings()
+					}
+				}
+			})
+			ui.Text(c, "Matched case-insensitively. ASCII words match whole words only; anything else matches as written.").
 				FontSize(11).TextColor(c.Theme().TextMuted)
 
 			ui.Field(c, "Record every session to a log file", func() {

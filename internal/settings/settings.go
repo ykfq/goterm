@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/ykfq/goterm/internal/atomicfile"
 )
@@ -23,6 +24,12 @@ const (
 	MaxFontSize         = 32
 	MinIdleHours        = 1
 	MaxIdleHours        = 744
+	// The custom highlight keywords are the user's, but they still need a
+	// limit: every word is matched against every line of output, and a file
+	// full of one-letter words would slow the terminal without colouring
+	// anything useful.
+	MaxHighlightWords   = 64
+	MaxHighlightWordLen = 64
 )
 
 // Settings is the whole preference file. Zero values are repaired by Clamp, so
@@ -43,6 +50,13 @@ type Settings struct {
 	LastUploadDir string `json:"lastUploadDir,omitempty"`
 	// LastHostID reopens the sidebar on the host used last.
 	LastHostID string `json:"lastHostId,omitempty"`
+	// HighlightWords are the user's own keywords, coloured like the built-in
+	// ones whenever a line of plain output contains one. Matching ignores
+	// ASCII case; an all-ASCII word matches whole words only, so "ERR" cannot
+	// colour part of "error" — a keyword with any non-ASCII character (CJK
+	// included) matches as a substring, because those scripts have no spaces
+	// to bound a word with.
+	HighlightWords []string `json:"highlightWords,omitempty"`
 }
 
 // Default is what a fresh install starts with: the 1.x defaults, translated to
@@ -84,6 +98,54 @@ func (s *Settings) Clamp() {
 	default:
 		s.Encoding = "utf-8"
 	}
+	s.HighlightWords = clampWords(s.HighlightWords)
+}
+
+// clampWords drops blank, oversized and duplicate words and applies the cap.
+// Order is kept, so the list a user typed stays recognisable.
+func clampWords(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	seen := make(map[string]bool, len(in))
+	for _, w := range in {
+		w = strings.TrimSpace(w)
+		if w == "" || len(w) > MaxHighlightWordLen {
+			continue
+		}
+		k := strings.ToLower(w)
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, w)
+		if len(out) == MaxHighlightWords {
+			break
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// ParseHighlightWords reads the settings field's text: one keyword per line,
+// with commas and semicolons also accepted as separators so a paste of a
+// comma-separated list works without editing it first.
+func ParseHighlightWords(text string) []string {
+	fields := strings.FieldsFunc(text, func(r rune) bool {
+		return r == '\n' || r == '\r' || r == ',' || r == ';'
+	})
+	out := make([]string, 0, len(fields))
+	for _, f := range fields {
+		// A run of separators can leave a field of nothing but spaces:
+		// FieldsFunc splits on the separators, not on what surrounds them.
+		if f = strings.TrimSpace(f); f != "" {
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // Load reads path, or returns the defaults when it is missing or unreadable.

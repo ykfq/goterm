@@ -178,6 +178,10 @@ func (c *transferConn) Read(p []byte) (int, error) {
 // rebuilding the terminal or the SSH session.
 func (c *transferConn) SetHighlight(on bool) { c.hl.SetEnabled(on) }
 
+// SetWords pushes the user's custom highlight keywords to this tab's stream,
+// effective from the next line and without rebuilding anything.
+func (c *transferConn) SetWords(words []string) { c.hl.SetWords(words) }
+
 // SetEncoding switches the remote-output decoder without rebuilding the
 // terminal. A character split across the switch can be lost; the next one
 // decodes with the new setting.
