@@ -267,7 +267,10 @@ func (a *App) Open() {
 		StateKey:  "main",
 		Content:   ui.View(a.view),
 	})
-	if err := a.win.SetIcon(appIconPNG); err != nil { // the same artwork mygo bakes into the exe
+	// The monogram, not the wordmark: this is the 16-pixel title bar icon, where
+	// a 2.2:1 logo is a grey band. Explorer still shows the full mark from the
+	// executable's resources.
+	if err := a.win.SetIcon(appSmallIconPNG); err != nil {
 		log.Printf("goterm: window icon: %v", err)
 	}
 	a.installMenu()

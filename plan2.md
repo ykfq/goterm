@@ -54,9 +54,11 @@
   停发条件从「键盘闲置到窗口」改为「闲置到窗口 **且** 窗口不可见（`Manager.SetDetached`，
   由 `OnFocus/OnBlur/IsMinimized` 上报）」。可见即继续防御，离开才放弃租约（红线 8 仍然成立）。
   决策与证据见 `docs/DECISIONS.md`「Keepalives」一节。
-- **应用图标**：`resources/icon.png`（1024²，mygo 打进 exe）；`icon.go` 同步 embed，
-  `Window.SetIcon` 让裸 `go build` 也有图标。素材里的水印按像素分类剥除
-  （描内/描外投票 + 孔洞回填），16/32/48 px 可辨识。
+- **应用图标**：`resources/icon.png`（1024²，mygo 打进 exe，Explorer/开始菜单用完整 GT 商标）；
+  `resources/icon-small.png` 是同一设计的方形单字母徽标（G + 终端徽章），
+  `Window.SetIcon` 用它做标题栏/任务栏小图标 —— 2.2:1 的字标在 16px 标题栏里只剩一条灰色窄带，
+  方形 G 才能填满。两张图都由 `resources/goterm.icon2.jpg` 裁切生成，未重绘；
+  `resourcesExclude` 让设计稿 jpg 与 icon-small 只进二进制、不随 exe 发布。
 - **自定义高亮关键字**：`settings.json` 的 `highlightWords`（≤64 条，单条 ≤64B，去重限幅），
   设置 → 行为 里逐行编辑，**即时作用到已开会话**（`SetWords` 走和 `SetHighlight` 同一条
   接口探测路径）。ASCII 词只整词匹配（ERR 不打错 error 的半个词），含非 ASCII（日文/中文等）

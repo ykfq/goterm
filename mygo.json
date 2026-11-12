@@ -4,5 +4,9 @@
   "version": "2.2.0",
   "macos": {
     "minimumSystemVersion": "13.0"
-  }
+  },
+  "resourcesExclude": [
+    "*.jpg",
+    "icon-small.png"
+  ]
 }
