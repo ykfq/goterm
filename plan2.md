@@ -63,6 +63,12 @@
   设置 → 行为 里逐行编辑，**即时作用到已开会话**（`SetWords` 走和 `SetHighlight` 同一条
   接口探测路径）。ASCII 词只整词匹配（ERR 不打错 error 的半个词），含非 ASCII（日文/中文等）
   按子串匹配；不覆盖内置规则与程序自己的颜色。
+- **单行顶栏**：隐藏系统标题栏（`TitleBarHidden`）与菜单栏（`AutoHideMenuBar`，Alt/F10 唤出、
+  快捷键照常），视图自绘一行：方形徽标 + "GoTerm"（可拖动窗口）+ 标签 + 新建按钮，
+  平台窗口按钮由 mygo 画在右侧。原先"标题栏 / 菜单栏 / 标签栏"三行变一行。
+- **侧栏折叠修复**：折叠后 `main` 列缺 `FillHeight`，列按内容收缩，标签栏与状态栏被拉进
+  窗芯；现在外层 Row `Grow+Fill+Stretch`、内层 Column `Grow+FillHeight`。
+  `TestCollapsedSidebarKeepsChromeAtTheEdges` 钉住（回退到旧布局时状态栏实测落在 y=462/800）。
 - **Linux 开发环境**：`build/test.sh`（vet + 全测试）；Go 1.27 工具链 +
   `https://mirrors.tencent.com/go` 写在用户级 `go env`，不入库。
   **Linux 已知问题（非本项目）**：mygo 的 libghostty-vt 与 pango 在同一进程里会段错误
@@ -158,7 +164,7 @@
 | 应用命令 Ctrl+Shift+… | mygo 菜单加速键 | 🚧 |
 | 快捷键不向会话多发字符 | 菜单/Shortcut 先于终端消费 | ✅ |
 | 选中即复制 | `terminal.CopyOnSelect` | 🚧 |
-| 多行粘贴确认 | `Options.OnPaste` + 原生确认框 | 🚧 |
+| 多行粘贴确认 | `Options.OnPaste`（`paste.go`）：先剥终端控制序列（SGR/CSI/OSC/DCS，连同被截断的半个序列），多行弹原生确认框并显示首行；干净单行走终端自己的快速路径 | ✅ |
 | 终端 paste 接管 | 原生剪贴板，`OnPaste` | ✅ |
 | TUI 右键归程序，Shift+右键本地菜单 | Ghostty 默认行为 | ✅ |
 | OSC 52 复制（只写不读） | `NoClipboardWrite=false` + `ClipboardRead=Deny` | ✅ |

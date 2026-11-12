@@ -1,0 +1,111 @@
+package main
+
+import (
+	"fmt"
+	"strings"
+	"testing"
+
+	"github.com/egoist/mygo/transfer"
+	"github.com/egoist/mygo/ui"
+)
+
+// The paste path: what reaches the program, and when the user is asked.
+
+func TestStripPasteControlRemovesEscapeSequences(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"plain text; with semicolons", "plain text; with semicolons"},
+		// SGR from copied coloured output: the reported trailing garbage was
+		// the parameters of sequences like this, echoed by the shell.
+		{"\x1b[1;32mok\x1b[0m done", "ok done"},
+		{"tail\x1b[38;5;214m", "tail"},
+		// Cursor movement, erase, and a title change.
+		{"a\x1b[2Jb\x1b[12;40Hc", "abc"},
+		{"\x1b]0;window title\x07visible", "visible"},
+		{"\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\", "link"},
+		// Charset designators are three bytes.
+		{"\x1b(Bascii", "ascii"},
+		// Tabs and line breaks survive: they are the program's business.
+		{"a\tb\r\nc\nd", "a\tb\r\nc\nd"},
+		// A sequence cut off at the end is dropped, not pasted half-formed.
+		{"text\x1b[1;3", "text"},
+		{"text\x1b]0;unterminated", "text"},
+		// Other control characters go; multi-byte text stays byte for byte.
+		{"a\x00\x07b\x7fc 内存不足", "abc 内存不足"},
+	}
+	for _, tc := range cases {
+		if got := stripPasteControl(tc.in); got != tc.want {
+			t.Errorf("stripPasteControl(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestCleanSingleLinePasteTakesTheTerminalsOwnPath(t *testing.T) {
+	a := &App{}
+	tab := &Tab{}
+	if took := a.pasteText(tab, transfer.TextData("ls -l")); took {
+		t.Fatal("a clean single line was taken; it needs no handling")
+	}
+	if a.confirm != nil {
+		t.Fatal("a dialog appeared for a clean single line")
+	}
+}
+
+func TestMultiLinePasteAsksFirst(t *testing.T) {
+	a := &App{}
+	tab := &Tab{}
+	if took := a.pasteText(tab, transfer.TextData("one\ntwo\nthree")); !took {
+		t.Fatal("a multi-line paste went straight to the program")
+	}
+	if a.confirm == nil || !a.confirm.Open {
+		t.Fatal("no confirmation for a multi-line paste")
+	}
+	if !strings.Contains(a.confirm.Title, "3 lines") {
+		t.Fatalf("title %q does not say how many lines", a.confirm.Title)
+	}
+}
+
+func TestEscapeOnlyPasteSendsNothing(t *testing.T) {
+	a := &App{}
+	tab := &Tab{}
+	if took := a.pasteText(tab, transfer.TextData("\x1b[0m\x1b[2J")); !took {
+		t.Fatal("an escape-only paste was left to the terminal")
+	}
+	if a.confirm != nil {
+		t.Fatal("an escape-only paste asked a question")
+	}
+}
+
+// The sidebar folding away must not move the window's chrome: the tab strip
+// stays at the top and the status bar at the bottom, sidebar or no sidebar.
+func TestCollapsedSidebarKeepsChromeAtTheEdges(t *testing.T) {
+	app, err := NewApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+	app.tabs = []*Tab{{ID: "t1", Title: "deploy", Status: StatusConnecting}}
+	app.active = 0
+
+	statusText := fmt.Sprintf("GoTerm %s · %s · %s", Version, platformName(), app.secretBackend())
+	const height = 800
+
+	for _, hidden := range []bool{false, true} {
+		app.sidebarHidden = hidden
+		tt := ui.NewTester(app.view, 1200, height)
+		tt.Frame()
+		tab, ok := tt.Find("deploy")
+		if !ok {
+			t.Fatalf("hidden=%v: the tab strip did not render: %q", hidden, tt.Texts())
+		}
+		if tab.Y > 80 {
+			t.Errorf("hidden=%v: the tab strip sits at y=%.0f, not at the top", hidden, tab.Y)
+		}
+		status, ok := tt.Find(statusText)
+		if !ok {
+			t.Fatalf("hidden=%v: the status bar did not render: %q", hidden, tt.Texts())
+		}
+		if status.Y+status.H < height-60 {
+			t.Errorf("hidden=%v: the status bar sits at y=%.0f of %d, not at the bottom", hidden, status.Y, height)
+		}
+	}
+}

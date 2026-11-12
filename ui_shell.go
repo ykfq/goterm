@@ -38,19 +38,26 @@ func (a *App) view(c *ui.Context) {
 		a.toggleSidebar()
 	}
 
-	ui.Row(c).Fill().Children(func() {
-		if a.sidebarHidden {
-			a.rail(c)
-			ui.Column(c).Grow(1).Children(func() { a.main(c) })
-			return
-		}
-		split := ui.Split(c, &a.prefs.SidebarWidth,
-			func() { a.sidebar(c) },
-			func() { a.main(c) },
-		).Fill().SplitReset(268)
-		if split.Changed() {
-			a.prefs.Save(a.configPath)
-		}
+	ui.Column(c).Fill().Children(func() {
+		a.titleBar(c)
+		ui.Row(c).Grow(1).Fill().AlignItems(ui.Stretch).Children(func() {
+			if a.sidebarHidden {
+				a.rail(c)
+				// Fill, not just Grow: a column in a row sizes to its content
+				// unless told otherwise, and the content-sized column is what
+				// pulled the tab strip and the status bar into the middle of
+				// the window when the sidebar was folded away.
+				ui.Column(c).Grow(1).FillHeight().Children(func() { a.main(c) })
+				return
+			}
+			split := ui.Split(c, &a.prefs.SidebarWidth,
+				func() { a.sidebar(c) },
+				func() { a.main(c) },
+			).Fill().SplitReset(268)
+			if split.Changed() {
+				a.prefs.Save(a.configPath)
+			}
+		})
 	})
 
 	a.settingsDialog(c)
@@ -206,7 +213,6 @@ func (a *App) hostRow(c *ui.Context, h hoststore.Host) {
 func (a *App) main(c *ui.Context) {
 	col := ui.Column(c).Fill().Background(c.Theme().Background)
 	col.Children(func() {
-		a.tabBar(c)
 		t := a.current()
 		if t == nil {
 			a.welcome(c)
@@ -276,28 +282,60 @@ func (a *App) main(c *ui.Context) {
 	})
 }
 
-func (a *App) tabBar(c *ui.Context) {
-	ui.Column(c).Children(func() {
-		ui.Row(c).Height(38).Padding(6, 8).Gap(4).Children(func() {
-			ui.ScrollHorizontal(c).Grow(1).Children(func() {
-				ui.Row(c).Gap(3).Children(func() {
-					for i, t := range a.tabs {
-						a.tabChip(c, i, t)
-					}
-				})
-			})
-			ui.Button(c, "+").Label("New host").Tooltip("New host (Ctrl+Shift+T)").OnClick(a.openNewHost)
-		})
-		if a.pendingMoveFrom >= 0 && a.pendingMoveTo >= 0 {
-			from, to := a.pendingMoveFrom, a.pendingMoveTo
-			a.pendingMoveFrom, a.pendingMoveTo = -1, -1
-			a.moveTab(from, to)
-			if a.dragFrom >= 0 {
-				a.dragFrom = to
+// titleBar is the window's only chrome row: the app's mark, its name, the
+// tabs, and the window controls mygo draws at the right end (the OS title bar
+// is hidden). The menu bar auto-hides, so the three rows the window used to
+// spend before the terminal — title, menu, tabs — cost one.
+func (a *App) titleBar(c *ui.Context) {
+	bar := c.TitleBar()
+	height := float32(38)
+	if bar.Height > height {
+		height = bar.Height
+	}
+	ui.Row(c).Height(height).Padding(0, bar.Right, 0, bar.Left).Gap(8).
+		Background(c.Theme().Surface).AlignItems(ui.Center).Children(func() {
+		// Only this part drags the window: a drag handle over the tabs would
+		// turn a mis-aimed click into a window move instead of a tab switch.
+		mark := ui.Row(c).Padding(0, 8).Gap(6).AlignItems(ui.Center).DragWindow()
+		mark.Children(func() {
+			if src := a.mark(); src != nil {
+				ui.Image(c, src).Size(18, 18)
 			}
-		}
-		ui.Divider(c)
+			ui.Text(c, "GoTerm").FontSize(12).Bold()
+		})
+		ui.Box(c).Width(1).Height(18).Background(c.Theme().Border)
+		ui.ScrollHorizontal(c).Grow(1).Children(func() {
+			ui.Row(c).Gap(3).AlignItems(ui.Center).Children(func() {
+				for i, t := range a.tabs {
+					a.tabChip(c, i, t)
+				}
+			})
+		})
+		ui.Button(c, "+").Label("New host").Tooltip("New host (Ctrl+Shift+T)").OnClick(a.openNewHost)
 	})
+	if a.pendingMoveFrom >= 0 && a.pendingMoveTo >= 0 {
+		from, to := a.pendingMoveFrom, a.pendingMoveTo
+		a.pendingMoveFrom, a.pendingMoveTo = -1, -1
+		a.moveTab(from, to)
+		if a.dragFrom >= 0 {
+			a.dragFrom = to
+		}
+	}
+	ui.Divider(c)
+}
+
+// mark is the window's own icon, decoded once. It is the monogram rather than
+// the wordmark: 18 pixels in a title bar is where a 2.2:1 logo turns to mush.
+func (a *App) mark() ui.ImageSource {
+	if a.markSrc != nil {
+		return a.markSrc
+	}
+	src, err := ui.DecodeImage(appSmallIconPNG)
+	if err != nil {
+		return nil
+	}
+	a.markSrc = src
+	return src
 }
 
 func (a *App) tabChip(c *ui.Context, i int, t *Tab) {

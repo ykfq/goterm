@@ -15,6 +15,7 @@ import (
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/terminal"
+	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
 
 	"github.com/ykfq/goterm/internal/appdir"
@@ -85,6 +86,10 @@ type App struct {
 	// sidebarHidden folds the host list away (Ctrl+Shift+B). The width it had
 	// is kept, so showing it again restores what the user chose.
 	sidebarHidden bool
+
+	// markSrc is the window's title-bar icon, decoded once from the embedded
+	// monogram.
+	markSrc ui.ImageSource
 
 	mu sync.Mutex
 }
@@ -266,6 +271,13 @@ func (a *App) Open() {
 		MinHeight: 480,
 		StateKey:  "main",
 		Content:   ui.View(a.view),
+		// The view draws the title bar (mark, name and tabs in one row), and
+		// the menu bar stays out of sight until Alt or F10 — its shortcuts
+		// work regardless. Together that is one chrome row where there were
+		// three, which is rows of terminal the window did not have.
+		TitleBarStyle:   mygo.TitleBarHidden,
+		TitleBarHeight:  40,
+		AutoHideMenuBar: true,
 	})
 	// The monogram, not the wordmark: this is the 16-pixel title bar icon, where
 	// a 2.2:1 logo is a grey band. Explorer still shows the full mark from the
@@ -632,6 +644,9 @@ func (a *App) startTerminal(t *Tab) {
 		Font:       terminal.Font{Family: a.prefs.FontFamily, Size: float32(a.prefs.FontSize)},
 		Scrollback: a.prefs.ScrollbackMB << 20,
 		Theme:      a.terminalTheme(),
+		// Pastes are cleaned of terminal control sequences and a multi-line
+		// paste asks first (see paste.go).
+		OnPaste: func(d transfer.Data) bool { return a.pasteText(t, d) },
 		CopyOnSelect: func() terminal.CopyOnSelect {
 			if a.prefs.CopyOnSelect {
 				return terminal.CopyOnSelectClipboard
