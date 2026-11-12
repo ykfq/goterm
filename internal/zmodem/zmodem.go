@@ -38,12 +38,15 @@ const (
 	ZCRC    = 22
 )
 
-// Datasubframe types.
+// Datasubframe types. The trailer of a data subframe says what the sender
+// expects back: ZCRCG keeps going, ZCRCQ asks for a ZCRCR, ZCRCE ends the file,
+// ZCRCW ends and waits.
 const (
 	ZCRCE = 'h'
 	ZCRCG = 'i'
 	ZCRCQ = 'j'
-	ZCRW  = 'k'
+	ZCRCW = 'k'
+	ZCRCR = 'l'
 )
 
 // ErrCanceled reports that the peer gave up or the user closed the dialog.
@@ -57,6 +60,10 @@ var ErrPeerWantsDownload = errors.New("zmodem: peer wants to send")
 // errNotFrame says the bytes at the front of the stream are not a frame. The
 // caller keeps reading; a real peer skips line noise between frames.
 var errNotFrame = errors.New("zmodem: not a frame")
+
+// errSkipped reports that the peer already has the file and asked us not to
+// send it. The session goes on: a batch is not lost because one file was there.
+var errSkipped = errors.New("zmodem: the peer skipped the file")
 
 // errTimeout reports a silent peer.
 var errTimeout = errors.New("zmodem: timed out waiting for the peer")
@@ -180,6 +187,15 @@ type Frame struct {
 	Args []byte // header arguments, when the frame has them
 	Data []byte // binary payload, for ZDATA, ZFILE and ZCRCG
 	Hex  bool   // a hex header rather than a binary one
+	// Offset is the header word a binary frame carries. In a ZDATA frame it is
+	// where in the file Data belongs, which is how a receiver notices a peer
+	// that restarted a file from the middle.
+	Offset uint32
+	// Kind is the datasubframe trailer that ended the frame: ZCRCG to keep
+	// going, ZCRCQ to be acknowledged, ZCRCE to stop. A receiver that stays
+	// quiet on ZCRCQ stops the transfer, because the sender is waiting for the
+	// ZCRCR that acknowledges the window.
+	Kind byte
 }
 
 // Next returns the next frame, skipping line noise. A binary frame's payload
@@ -247,11 +263,15 @@ func (r *Reader) tryFrame() (*Frame, error) {
 		if err != nil {
 			return nil, err
 		}
-		data, err := r.subpackets()
+		off, err := r.readHeaderOffset()
 		if err != nil {
 			return nil, err
 		}
-		return &Frame{Type: typ, Data: data}, nil
+		data, kind, err := r.subpackets()
+		if err != nil {
+			return nil, err
+		}
+		return &Frame{Type: typ, Data: data, Offset: off, Kind: kind}, nil
 	case ZBIN32:
 		typ, err := r.readByte()
 		if err != nil {
@@ -260,11 +280,15 @@ func (r *Reader) tryFrame() (*Frame, error) {
 		if err := r.skipCRC32(); err != nil {
 			return nil, err
 		}
-		data, err := r.subpackets32()
+		off, err := r.readHeaderOffset()
 		if err != nil {
 			return nil, err
 		}
-		return &Frame{Type: typ, Data: data}, nil
+		data, kind, err := r.subpackets32()
+		if err != nil {
+			return nil, err
+		}
+		return &Frame{Type: typ, Data: data, Offset: off, Kind: kind}, nil
 	}
 	return nil, errNotFrame
 }
@@ -284,7 +308,16 @@ func (r *Reader) hexFrame() (*Frame, error) {
 	}
 	// A header's arguments are also its payload: a caller that reads a frame as
 	// data (ZFILE's name list) must not have to know which form arrived.
-	return &Frame{Type: typ, Args: args, Data: args, Hex: true}, nil
+	f := &Frame{Type: typ, Args: args, Data: args, Hex: true}
+	// For the headers that carry a position rather than text, the first four
+	// argument bytes are the same header word a binary frame puts in Offset:
+	// ZEOF's byte count and ZRPOS's restart offset live there, and a receiver
+	// that reads them as zero accepts a short file without noticing.
+	switch typ {
+	case ZEOF, ZRPOS, ZSKIP, ZCRC, ZFIN, ZABORT, ZRINIT, ZNAK2:
+		f.Offset = readOffset(args)
+	}
+	return f, nil
 }
 
 // readHexHeader parses the digits of a hex header without checking the CRC.
@@ -326,19 +359,79 @@ func (r *Reader) readHexHeader() (typ byte, args []byte, want uint16, err error)
 
 // subpackets reads a ZBIN data frame: escaped bytes up to DLE <kind> DLE h
 // DLE l, repeated until a kind ends the frame.
-func (r *Reader) subpackets() ([]byte, error) {
+func (r *Reader) subpackets() ([]byte, byte, error) {
 	var out []byte
 	for {
 		chunk, kind, err := r.subpacket(false)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		out = append(out, chunk...)
 		if kind == ZCRCE {
 			// ZCRCE ends a frame; the terminal CR LF is already behind it.
-			return out, r.trailingCR()
+			return out, kind, r.trailingCR()
+		}
+		// A window that asks to be acknowledged ends the frame too: lrzsz
+		// writes one subframe per frame and then waits for the ZCRCR.
+		if kind == ZCRCQ {
+			return out, kind, r.trailingCRCOnly()
+		}
+		if kind == ZCRCG {
+			return out, kind, nil
 		}
 	}
+}
+
+// readHeaderOffset takes the four-byte header word that follows the type of a
+// binary frame, undoing the escapes it is transmitted with.
+func (r *Reader) readHeaderOffset() (uint32, error) {
+	word := make([]byte, 0, 4)
+	for len(word) < 4 {
+		b, err := r.readByte()
+		if err != nil {
+			return 0, err
+		}
+		if b != ZDLE {
+			word = append(word, b)
+			continue
+		}
+		nxt, err := r.readByte()
+		if err != nil {
+			return 0, err
+		}
+		word = append(word, nxt^0x40)
+	}
+	// The header signs itself, and the answer arrives right after it: a peer
+	// that does not find a checksum here reads the first two payload bytes as
+	// one and calls the whole frame damaged.
+	want, err := r.readByte()
+	if err != nil {
+		return 0, err
+	}
+	lo, err := r.readByte()
+	if err != nil {
+		return 0, err
+	}
+	if got := CRC16(word); got != uint16(want)<<8|uint16(lo) {
+		return 0, errDamagedFrame
+	}
+	return readOffset(word), nil
+}
+
+// errDamagedFrame reports a frame whose own checksum does not match it. The
+// peer's answer to that is a NAK and a repeated window, which is the transfer
+// noticing damage instead of writing it into a file.
+var errDamagedFrame = errors.New("zmodem: frame CRC mismatch")
+
+// trailingCRCOnly eats the two CRC bytes that follow a ZCRCQ trailer. The
+// sender does not end the frame with CR LF here: it waits for our ZCRCR first.
+func (r *Reader) trailingCRCOnly() error {
+	for i := 0; i < 2; i++ {
+		if _, err := r.readByte(); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // subpacket reads escaped data up to and including one DLE <kind> DLE h DLE l.
@@ -364,7 +457,7 @@ func (r *Reader) subpacket(crc32 bool) ([]byte, byte, error) {
 			continue
 		}
 		switch typ {
-		case ZCRCE, ZCRCG, ZCRCQ, ZCRW:
+		case ZCRCE, ZCRCG, ZCRCQ, ZCRCW:
 			if err := r.checkCRC(raw, crc32); err != nil {
 				return nil, 0, err
 			}
@@ -436,16 +529,21 @@ func (r *Reader) skipCRC32() error {
 	return nil
 }
 
-func (r *Reader) subpackets32() ([]byte, error) {
+func (r *Reader) subpackets32() ([]byte, byte, error) {
 	var out []byte
 	for {
 		chunk, kind, err := r.subpacket(true)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		out = append(out, chunk...)
-		if kind == ZCRCE {
-			return out, r.trailingCR()
+		switch kind {
+		case ZCRCE:
+			return out, kind, r.trailingCR()
+		case ZCRCQ:
+			return out, kind, r.trailingCRCOnly()
+		default:
+			return out, kind, nil
 		}
 	}
 }

@@ -25,7 +25,7 @@ func TestBinaryFrameRoundTrip(t *testing.T) {
 		data = append(data, byte(i))
 	}
 	for _, n := range []int{0, 1, 2, 57, 128, 256} {
-		r := NewReader(bytes.NewReader(binFrame(ZDATA, data[:n], ZCRCE)))
+		r := NewReader(bytes.NewReader(dataFrame(ZDATA, uint32(n), data[:n], ZCRCE)))
 		f, err := r.Next()
 		if err != nil {
 			t.Fatalf("n=%d: %v", n, err)

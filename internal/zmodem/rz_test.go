@@ -68,6 +68,9 @@ func peerRZ(r *Reader, out *pipeStream, dir string) {
 		case ZEOF:
 			os.MkdirAll(dir, 0o755)
 			os.WriteFile(filepath.Join(dir, name), data, 0o644)
+			// A real rz invites the next file once it has taken this one, and
+			// the sender waits for that before it closes the session.
+			out.Write(hexHeader(ZRINIT, []byte{0, 0, 0, 0, 0, 1}))
 		case ZFIN:
 			out.Write(hexHeader(ZFIN, nil))
 			return

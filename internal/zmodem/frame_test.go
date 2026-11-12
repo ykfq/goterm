@@ -19,7 +19,7 @@ func TestFrameDataCoversBothForms(t *testing.T) {
 		t.Fatalf("hex header payload %q, want %q", header.Data, args)
 	}
 
-	binary, err := NewReader(bytes.NewReader(binFrame(ZFILE, args, ZCRCE))).Next()
+	binary, err := NewReader(bytes.NewReader(dataFrame(ZFILE, 0, args, ZCRCE))).Next()
 	if err != nil {
 		t.Fatal(err)
 	}

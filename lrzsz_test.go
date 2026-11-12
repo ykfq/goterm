@@ -236,3 +236,51 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// TestLrzszUploadSurvivesARigidPeer sends a file bigger than one window to a
+// receiver that behaves like lrzsz's rz instead of like our own code: it wants
+// the descriptor to declare the size, every window to arrive at the offset it
+// asked for, and a ZCRCR for each window before it reads the next.
+//
+// The mirror-image tests above cannot show any of this, because both halves of
+// them are ours. With the frames this code used to write — no offset, a
+// descriptor of "0 0", ZCRCG windows acknowledged by a ZACK that real rz never
+// sends — the transfer stops after the first window and the file never lands.
+func TestLrzszUploadSurvivesARigidPeer(t *testing.T) {
+	host, port, dir := lrzszServer(t)
+	source := filepath.Join(t.TempDir(), "hundred-k.bin")
+	payload := bytes.Repeat([]byte("0123456789abcdef"), 1024*7) // 114688 bytes: four windows
+	if err := os.WriteFile(source, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess := dialLrzsz(t, host, port)
+	conn, err := newTransferConn(sess, encode.UTF8, fixedChooser{dir: dir, upload: []string{source}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	screen := drain(conn)
+
+	if _, err := conn.Write([]byte("rzstrict\r")); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "hundred-k.bin")
+	if !waitFor(t, 45*time.Second, func() bool {
+		got, err := os.ReadFile(target)
+		return err == nil && bytes.Equal(got, payload)
+	}) {
+		got, _ := os.ReadFile(target)
+		t.Fatalf("a rigid rz never took the file: %d of %d bytes; screen=%q",
+			len(got), len(payload), plainOf(screen))
+	}
+}
+
+// plainOf is what the terminal saw, without the colour codes the highlight
+// layer injects into the shell's own words.
+func plainOf(b *syncBuffer) string {
+	s := stripPasteControl(string(b.Bytes()))
+	if len(s) > 600 {
+		s = s[len(s)-600:]
+	}
+	return s
+}

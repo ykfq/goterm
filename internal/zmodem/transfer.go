@@ -1,10 +1,13 @@
 package zmodem
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -241,6 +244,7 @@ func (rcv *Receiver) acceptFile(r *Reader, f *Frame) ([]string, error) {
 	if len(names) > 0 {
 		name = names[0]
 	}
+	want := declaredSize(f.Data)
 	if _, err := rcv.Out.Write(hexHeader(ZRPOS, []byte{0, 0, 0, 0})); err != nil {
 		return nil, err
 	}
@@ -253,9 +257,30 @@ func (rcv *Receiver) acceptFile(r *Reader, f *Frame) ([]string, error) {
 		}
 		switch next.Type {
 		case ZDATA:
-			data = append(data, next.Data...)
-			rcv.On(name, int64(len(data)), -1, 1, 1)
+			// The frame says where in the file its bytes belong. A peer that
+			// repeats a window because a frame came through damaged is not
+			// offering it twice, so the bytes land where they claim to.
+			if int(next.Offset) <= len(data) {
+				data = append(data[:next.Offset], next.Data...)
+			} else {
+				data = append(data, next.Data...)
+			}
+			// A window that asked to be acknowledged stops the sender until the
+			// ZCRCR arrives. Silence here is a transfer that stops moving.
+			if next.Kind == ZCRCQ || next.Kind == ZCRCW {
+				if _, err := rcv.Out.Write(hexHeader(ZCRC, offsetBytes(uint32(ZCRCR)))); err != nil {
+					return saved, err
+				}
+			}
+			rcv.On(name, int64(len(data)), want, 1, 1)
 		case ZEOF:
+			// ZEOF carries the count the sender made. Taking a short file
+			// quietly is worse than failing: the user gets a file that looks
+			// fine and is not.
+			if next.Offset > 0 && int(next.Offset) > len(data) {
+				return saved, fmt.Errorf("zmodem: %s ended at %d of %d bytes",
+					name, len(data), next.Offset)
+			}
 			if err := os.MkdirAll(rcv.Dir, 0o755); err != nil {
 				return saved, err
 			}
@@ -307,4 +332,23 @@ func sanitize(name string) string {
 		return "received"
 	}
 	return name
+}
+
+// declaredSize is the byte count lrzsz puts in a ZFILE descriptor: name, NUL,
+// then mode, size, file count and times as plain text. Zero when the peer did
+// not say, which leaves progress as a count of bytes rather than a percentage.
+func declaredSize(args []byte) int64 {
+	i := bytes.IndexByte(args, 0)
+	if i < 0 || i+1 >= len(args) {
+		return 0
+	}
+	fields := strings.Fields(string(args[i+1:]))
+	if len(fields) < 2 {
+		return 0
+	}
+	n, err := strconv.ParseInt(fields[1], 10, 64)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
 }
