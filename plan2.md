@@ -193,7 +193,7 @@
 | 应用命令 Ctrl+Shift+… | mygo 菜单加速键 | 🚧 |
 | 快捷键不向会话多发字符 | 菜单/Shortcut 先于终端消费 | ✅ |
 | 选中即复制 | `terminal.CopyOnSelect` | 🚧 |
-| 多行粘贴确认 | `Options.OnPaste`（`paste.go`）：先剥终端控制序列（SGR/CSI/OSC/DCS，连同被截断的半个序列），多行弹原生确认框并显示首行；干净单行走终端自己的快速路径 | ✅ |
+| 多行粘贴确认 | `Options.OnPaste`（`paste.go`）：先剥终端控制序列（SGR/CSI/OSC/DCS，连同被截断的半个序列）；多行弹**可编辑的多行文本框**——里面就是将要发送的全文（旧版只给首行预览，等于让用户批准三行却只看见一行），勾选项「去掉末尾的空格与空行」默认开启（末尾空行会被 shell 当成一条命令跑掉），**Paste 是默认按钮，回车即粘贴**（按钮持有键盘；文本框故意不抢焦点，因为在那里回车必须是换行）；干净单行走终端自己的快速路径 |  |
 | 终端 paste 接管 | 原生剪贴板，`OnPaste` | ✅ |
 | TUI 右键归程序，Shift+右键本地菜单 | Ghostty 默认行为 | ✅ |
 | OSC 52 复制（只写不读） | `NoClipboardWrite=false` + `ClipboardRead=Deny` | ✅ |

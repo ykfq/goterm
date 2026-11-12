@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"strings"
 	"unicode/utf8"
 
@@ -121,22 +120,13 @@ func (a *App) pasteText(t *Tab, d transfer.Data) bool {
 		term.Paste(clean)
 		return true
 	}
-	lines := 1 + strings.Count(strings.ReplaceAll(clean, "\r\n", "\n"), "\n")
-	first := clean
-	if i := strings.IndexAny(first, "\r\n"); i >= 0 {
-		first = first[:i]
-	}
-	if len(first) > 60 {
-		first = first[:57] + "…"
-	}
-	a.confirm = &Confirm{
-		Open:  true,
-		Title: fmt.Sprintf("Paste %d lines?", lines),
-		Body:  "Each line runs as it arrives. The first is:\n\n" + first,
-		OK:    "Paste",
-		Run: func() {
+	a.pasteAsk = &PasteAsk{
+		Open:    true,
+		Text:    clean,
+		TrimEnd: true,
+		Run: func(text string) {
 			if t.Term != nil {
-				t.Term.Paste(clean)
+				t.Term.Paste(text)
 			}
 		},
 	}
@@ -144,6 +134,15 @@ func (a *App) pasteText(t *Tab, d transfer.Data) bool {
 		a.win.Invalidate()
 	}
 	return true
+}
+
+// trimPasteEnd drops the whitespace at the end of a paste: the trailing spaces
+// nobody typed on purpose and the blank lines a clipboard likes to carry. A
+// trailing blank line is the one that bites — a shell runs it as an empty
+// command, and a REPL takes it as one more submit. Only the end is touched:
+// inner blank lines and leading text are what the user copied.
+func trimPasteEnd(s string) string {
+	return strings.TrimRight(s, " \t\r\n\u00a0\u3000")
 }
 
 // digitsOnly keeps a one-time code to what TOTP and HOTP put in it: its

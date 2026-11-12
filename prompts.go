@@ -42,6 +42,19 @@ type Confirm struct {
 	Run    func()
 }
 
+// PasteAsk is the multi-line paste dialog. The text goes in an editable box
+// rather than a quote of its first line: pasting runs every line that lands,
+// so the point of asking is to let the user see and fix what is about to run.
+type PasteAsk struct {
+	Open bool
+	// Text is what will be sent, and what the user may still change.
+	Text string
+	// TrimEnd drops the spaces and blank lines at the end of the paste. A
+	// trailing blank line is not cosmetic: the shell runs it as a command.
+	TrimEnd bool
+	Run     func(text string)
+}
+
 func (a *App) askSecret(t *Tab, kind promptKind, proxy bool) {
 	target := t.Cfg.Target()
 	if target == "" && t.HostID != "" {

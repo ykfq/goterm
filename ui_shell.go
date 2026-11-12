@@ -65,6 +65,7 @@ func (a *App) view(c *ui.Context) {
 	a.hostEditorDialog(c)
 	a.promptDialog(c)
 	a.confirmDialog(c)
+	a.pasteDialog(c)
 	a.vaultDialog(c)
 	a.knownHostsDialog(c)
 	a.aboutDialog(c)

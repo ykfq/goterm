@@ -56,11 +56,91 @@ func TestMultiLinePasteAsksFirst(t *testing.T) {
 	if took := a.pasteText(tab, transfer.TextData("one\ntwo\nthree")); !took {
 		t.Fatal("a multi-line paste went straight to the program")
 	}
-	if a.confirm == nil || !a.confirm.Open {
+	if a.pasteAsk == nil || !a.pasteAsk.Open {
 		t.Fatal("no confirmation for a multi-line paste")
 	}
-	if !strings.Contains(a.confirm.Title, "3 lines") {
-		t.Fatalf("title %q does not say how many lines", a.confirm.Title)
+	// The dialog gets the whole text. It used to carry a preview of the first
+	// line, which asked the user to approve three lines while showing one.
+	if a.pasteAsk.Text != "one\ntwo\nthree" {
+		t.Fatalf("the dialog holds %q, want the whole paste", a.pasteAsk.Text)
+	}
+	if !a.pasteAsk.TrimEnd {
+		t.Fatal("trailing whitespace is left in by default")
+	}
+}
+
+func TestTrimPasteEnd(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"ls -l", "ls -l"},
+		// The paste that runs one more empty command than the user meant.
+		{"ls -l\n", "ls -l"},
+		{"ls -l\r\n\r\n", "ls -l"},
+		{"echo hi   ", "echo hi"},
+		{"echo hi\t \n\n   \n", "echo hi"},
+		// Inner blank lines and leading text are what was copied: they stay.
+		{"first\n\nsecond", "first\n\nsecond"},
+		{"   indented\n", "   indented"},
+		// The spaces people actually paste: no-break and full width.
+		{"end\u00a0\u3000", "end"},
+		{"\n\n", ""},
+	}
+	for _, tc := range cases {
+		if got := trimPasteEnd(tc.in); got != tc.want {
+			t.Errorf("trimPasteEnd(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestPasteDialogEditsAndPastesOnEnter drives the dialog the way a keyboard
+// user does: no mouse, Enter, done. The text box is editable and holds the whole
+// paste, the button holds the keyboard, and the trailing blank line does not
+// reach the shell.
+func TestPasteDialogEditsAndPastesOnEnter(t *testing.T) {
+	app, err := NewApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+
+	got := make(chan string, 1)
+	app.pasteAsk = &PasteAsk{
+		Open:    true,
+		Text:    "make deploy\nssh host\t",
+		TrimEnd: true,
+		Run: func(text string) {
+			got <- text
+		},
+	}
+
+	tt := ui.NewTester(app.view, 1100, 760)
+	tt.Frame()
+
+	field, ok := tt.Access("Paste text")
+	if !ok {
+		t.Fatalf("no editable text area in the paste dialog: %q", tt.Texts())
+	}
+	if !field.Multiline {
+		t.Fatal("the paste box is not multiline")
+	}
+	if !strings.Contains(field.Value, "ssh host") {
+		t.Fatalf("the text area holds %q, want the whole paste", field.Value)
+	}
+	if !tt.Focused("Paste") {
+		t.Fatal("Enter would not paste: the Paste button does not hold the keyboard")
+	}
+
+	tt.KeyDown(ui.KeyEnter)
+	tt.Frame()
+	select {
+	case text := <-got:
+		if text != "make deploy\nssh host" {
+			t.Fatalf("pasted %q, want the text with its trailing tab trimmed", text)
+		}
+	default:
+		t.Fatal("Enter did not paste")
+	}
+	if app.pasteAsk != nil {
+		t.Fatal("the dialog stayed open after the paste")
 	}
 }
 
@@ -70,7 +150,7 @@ func TestEscapeOnlyPasteSendsNothing(t *testing.T) {
 	if took := a.pasteText(tab, transfer.TextData("\x1b[0m\x1b[2J")); !took {
 		t.Fatal("an escape-only paste was left to the terminal")
 	}
-	if a.confirm != nil {
+	if a.confirm != nil || a.pasteAsk != nil {
 		t.Fatal("an escape-only paste asked a question")
 	}
 }

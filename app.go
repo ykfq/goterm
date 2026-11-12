@@ -73,10 +73,11 @@ type App struct {
 
 	editor HostEditor
 
-	prompt  *Prompt
-	confirm *Confirm
-	vault   *Vault
-	status  string
+	prompt   *Prompt
+	confirm  *Confirm
+	pasteAsk *PasteAsk
+	vault    *Vault
+	status   string
 
 	// logDir and configPath are resolved once; the settings dialog shows them.
 	logDir      string

@@ -461,6 +461,54 @@ func (a *App) confirmDialog(c *ui.Context) {
 	}
 }
 
+// pasteDialog asks about a multi-line paste with the text itself: an editable
+// box holding exactly what will be sent, and a Paste button that holds the
+// keyboard so Enter finishes the job the user is already reaching for.
+func (a *App) pasteDialog(c *ui.Context) {
+	if a.pasteAsk == nil {
+		return
+	}
+	p := a.pasteAsk
+	open := p.Open
+	ui.Modal(c, &open, func() {
+		ui.Column(c).Width(640).Gap(12).Children(func() {
+			lines := 1 + strings.Count(strings.ReplaceAll(p.Text, "\r\n", "\n"), "\n")
+			ui.Text(c, fmt.Sprintf("Paste %d lines?", lines)).FontSize(17).Bold()
+			ui.Text(c, "Every line runs as soon as it arrives. Edit anything below first — this is what gets sent.").
+				FontSize(12).TextColor(c.Theme().TextMuted)
+			ui.TextArea(c, &p.Text).MinHeight(160).MaxHeight(360).Label("Paste text")
+			ui.Checkbox(c, &p.TrimEnd, "Trim the trailing spaces and blank lines")
+			ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
+				if ui.Button(c, "Cancel").Clicked() {
+					p.Open = false
+					a.pasteAsk = nil
+				}
+				// AutoFocus is what makes Enter the paste: a focused button
+				// answers Enter and Space. The text box deliberately does not
+				// take the focus first, because there Enter has to stay a
+				// newline.
+				btn := ui.PrimaryButton(c, "Paste").AutoFocus()
+				if btn.Clicked() {
+					run := p.Run
+					text := p.Text
+					if p.TrimEnd {
+						text = trimPasteEnd(text)
+					}
+					p.Open = false
+					a.pasteAsk = nil
+					if run != nil && text != "" {
+						a.post(func() { run(text) })
+					}
+				}
+			})
+		})
+	})
+	p.Open = open
+	if !open && a.pasteAsk == p {
+		a.pasteAsk = nil
+	}
+}
+
 func (a *App) knownHostsDialog(c *ui.Context) {
 	ui.Modal(c, &a.showKnownHosts, func() {
 		ui.Column(c).Width(620).MaxHeight(560).Gap(10).Children(func() {
