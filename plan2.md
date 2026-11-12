@@ -52,6 +52,22 @@
   于是 Ctrl+C 与回车都进了协议读——只能关标签。现在取消即发 `zmodem.Cancel()`
   （ZABORT + ZFIN），并有 2 秒静默窗口，不把对端的收尾帧当成新一次传输。
   `TestLrzszCancelReleasesTheRemote` 用真 SSH 验证：屏幕出现 `canceled`，再敲一行能得到提示符响应。
+- **rz 上传此前根本发不出去**（2.2）：对着真 lrzsz 的语义逐条纠正——
+  binary 帧少了每帧都有的 4 字节 offset（对端会把文件头 4 个字节当成偏移），
+  二进制头也没有自己那枚校验和（对端会把数据头两字节当成校验和，判为坏帧）；
+  ZFILE 描述符写死 `0 0`（等于告诉 `rz` 这是空文件）、ZEOF 偏移写 0；
+  窗口用 ZCRCG 结尾却等一个真 `rz` 永远不会发的 ZACK——选完文件就此不动，
+  正是用户看到的"没反应"。现在 offset、header 校验和、真实大小、ZCRCE→ZEOF→ZRINIT
+  的顺序、ZCRCQ 窗口回 ZCRCR、ZRPOS 重传都对齐 lrzsz；CRC 覆盖的是**转义前**的字节
+  （lrzsz 在决定转义之前就把字节喂进校验和）。
+- **镜像测试证明不了互操作**（2.2）：`internal/sshtest/lrzsz` 原来的 `rz` 用的就是我们自己的
+  `zmodem.Receiver`，两边自说自话。新增 `rzstrict`：按真 `rz` 的脾气来的接收端——核对描述符里的
+  大小、核对每帧 offset、每个 ZCRCQ 必须等到 ZCRCR 才继续、ZEOF 的数量必须与描述符一致。
+  `TestLrzszUploadSurvivesARigidPeer` 用 114688 字节（四个窗口）打过去；改之前它连一字节都收不到。
+- **sz 下载侧同步补上**：接收端回 ZCRCR（不然对端发完一个窗口就停住）、按帧里的 offset 落位、
+  ZEOF 数量与收到的字节不符直接报错，不再悄悄存下一个短文件。
+- **目录框的按钮**：Windows 的目录选择框写着"打开"，用户会以为不能选。现在显式给
+  `ButtonLabel`（"Choose This Folder"）；空选择不再静默当作取消，状态栏会说 `no folder chosen`。
 - **P4 部分**：标签拖拽换位（带活动标签跟随测试）；远端编码切换对已开会话即时生效
   （`decodingReader`，不重建终端）。
 - **关键字高亮**：`internal/highlight` 在解码后的字节流上注入 SGR。只处理不含 ESC 的纯文本行；

@@ -561,7 +561,11 @@ func (p *lrzszPeer) receive() error {
 		return err
 	}
 	if strings.TrimSpace(dir) == "" {
+		// An empty answer is not a cancel the user can see: the dialog closed
+		// with nothing usable in it. Say so, or the transfer looks like it
+		// never started.
 		p.abort()
+		p.notice("no folder chosen")
 		return zmodem.ErrCanceled
 	}
 	saved, err := (&zmodem.Receiver{In: p.stream, Out: sessionIn{p.c.sess}, Dir: dir, On: p.progress("<- ")}).Receive()

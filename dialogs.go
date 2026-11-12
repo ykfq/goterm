@@ -37,6 +37,10 @@ func (d dialogs) ChooseDownloadFolder(suggested string) (string, error) {
 		Title:       "Choose the folder to save into",
 		Directory:   true,
 		DefaultPath: suggested,
+		// Without this a folder picker on Windows keeps its stock "Open"
+		// button, which invites a double-click into the folder rather than
+		// taking it as the answer.
+		ButtonLabel: "Choose This Folder",
 	})
 	if err != nil || len(dirs) == 0 {
 		return "", zmodem.ErrCanceled
@@ -52,13 +56,17 @@ func (d dialogs) ChooseUpload(dirOnly bool) ([]string, error) {
 	if dirOnly {
 		title = "Choose a folder to send"
 	}
-	paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
+	options := mygo.OpenDialogOptions{
 		Parent:      d.app.win,
 		Title:       title,
 		Multiple:    !dirOnly,
 		Directory:   dirOnly,
 		DefaultPath: d.app.lastUploadDir(),
-	})
+	}
+	if dirOnly {
+		options.ButtonLabel = "Choose This Folder"
+	}
+	paths, err := mygo.Dialog.Open(options)
 	if err != nil || len(paths) == 0 {
 		return nil, zmodem.ErrCanceled
 	}
