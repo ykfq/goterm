@@ -311,7 +311,7 @@ func (a *App) titleBar(c *ui.Context) {
 			if src := a.mark(); src != nil {
 				// The mark is the pointer's way to the menus; only the name
 				// beside it drags the window, so a click on one is never both.
-				ui.Image(c, src).Size(16, 16).Padding(5).Radius(5).Tooltip("Menu").
+				ui.Image(c, src).Size(22, 22).Padding(3).Radius(5).Tooltip("Menu").
 					Menu(func(m *ui.Menu) { a.markMenu(m) })
 			}
 			ui.Text(c, "GoTerm").FontSize(11).Bold().Grow(1).DragWindow()
