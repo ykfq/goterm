@@ -41,6 +41,17 @@
   拖文件到终端即上传；`Ctrl+Shift+E` / 标签右键 / View 菜单开关；`--files` 启动即开。
 - **P3**：`transferConn` 把 `trzsz-go` 的 `TrzszFilter` 接在 SSH 字节流上，trzsz 与 ZMODEM 都已启用；
   下载默认落到 `%APPDATA%\goterm\downloads`，上传弹原生文件选择框；关掉了库的 Windows 控制台协议改写。
+- **下载去向两个协议问同一句话**（2.2）：`tsz` 与 `sz` 都弹同一个原生目录选择框。
+  `sz` 在 ZMODEM 握手前问；`tsz` 由 `transferConn.Write` 问——**按住那一下回车**，
+  等答案出来再决定要不要把命令送出去。反过来在字节流里按住 `::TRZSZ:TRANSFER:` 试过，
+  trzsz-go 的握手在部分时序下会崩（`zlib: invalid header`），所以一个字节的协议流都不碰。
+  用户说"不"就只吞掉回车，命令还留在提示符上没执行。
+  只认一行的第一个词：`cd /tmp && tsz x` 与 ↑ 调出的历史命令不弹框，落回默认目录。
+- **取消 lrzsz 不再卡住会话**（2.2）：目录框被取消时，之前只是本地返回错误，
+  远端 `sz` 还在等那个永远不来的 ZRINIT，它的 shell 排在后面，终端又是 raw 模式，
+  于是 Ctrl+C 与回车都进了协议读——只能关标签。现在取消即发 `zmodem.Cancel()`
+  （ZABORT + ZFIN），并有 2 秒静默窗口，不把对端的收尾帧当成新一次传输。
+  `TestLrzszCancelReleasesTheRemote` 用真 SSH 验证：屏幕出现 `canceled`，再敲一行能得到提示符响应。
 - **P4 部分**：标签拖拽换位（带活动标签跟随测试）；远端编码切换对已开会话即时生效
   （`decodingReader`，不重建终端）。
 - **关键字高亮**：`internal/highlight` 在解码后的字节流上注入 SGR。只处理不含 ESC 的纯文本行；
@@ -67,6 +78,7 @@
   快捷键照常），视图自绘 30px 一行：方形徽标（点开与 Alt/F10 相同的菜单）+ "GoTerm"（拖动窗口）
   + 标签 + 新建按钮，平台窗口按钮由 mygo 画在右侧。左侧留白与侧栏同宽，标签从侧栏右缘开始；
   折叠后对齐窄轨。菜单由 `menu.go` 的一张表同时生成原生菜单栏与徽标菜单。
+  徽标 22px（原先 16px 在 30px 行里几乎看不清，16px 标题栏是真痛点）。
 - **侧栏折叠修复**：折叠后 `main` 列缺 `FillHeight`，列按内容收缩，标签栏与状态栏被拉进
   窗芯；现在外层 Row `Grow+Fill+Stretch`、内层 Column `Grow+FillHeight`。
   `TestCollapsedSidebarKeepsChromeAtTheEdges` 钉住（回退到旧布局时状态栏实测落在 y=462/800）。
