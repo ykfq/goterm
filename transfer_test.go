@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -147,4 +148,223 @@ func TestDecodingReaderSwitchesMidStream(t *testing.T) {
 	if err != nil || string(buf[:n]) != "hi" {
 		t.Fatalf("after switching to UTF-8 read = %q, %v", buf[:n], err)
 	}
+}
+
+// trzszTerminal starts the trzsz server, connects a session, and wraps it in a
+// transfer connection with the given chooser. The returned dir is the remote's
+// directory, where demo.bin is served from.
+func trzszTerminal(t *testing.T, chooser Chooser) (conn *transferConn, dir string, screen *syncBuffer) {
+	t.Helper()
+	dir = t.TempDir()
+	payload := bytes.Repeat([]byte("trzsz-payload-"), 4096)
+	if err := os.WriteFile(filepath.Join(dir, "demo.bin"), payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := sshtest.New(sshtest.Options{
+		User:     "tester",
+		Password: "trzsz-pass",
+		Shell:    sshtest.TrzszShell{Dir: dir}.Run,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { srv.Close() })
+
+	host, portText, err := net.SplitHostPort(srv.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := NewApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { app.Close() })
+	sess, err := app.mgr.Connect(sshx.Config{
+		Host: host, Port: port, User: "tester", Password: "trzsz-pass",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { sess.Close() })
+
+	conn, err = newTransferConn(sess, encode.UTF8, chooser)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	return conn, dir, drain(conn)
+}
+
+// askingChooser records the folder questions and answers with folder, or
+// refuses when refuse is set. Its default folder is deliberately a different
+// directory, so a download that skipped the dialog is visible on disk.
+type askingChooser struct {
+	mu       sync.Mutex
+	asks     int
+	folder   string
+	refuse   bool
+	fallback string
+}
+
+func (a *askingChooser) ChooseDownloadFolder(string) (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.asks++
+	if a.refuse {
+		return "", errors.New("canceled")
+	}
+	return a.folder, nil
+}
+
+func (a *askingChooser) DefaultDownloadFolder() (string, error) { return a.fallback, nil }
+
+func (a *askingChooser) ChooseUpload(bool) ([]string, error) {
+	return nil, errors.New("upload not scripted")
+}
+
+func (a *askingChooser) count() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.asks
+}
+
+// TestTszAsksWhereToSave is the parity promise: tsz asks the same folder
+// question sz asks, and the file lands where the answer said, not in the folder
+// recorded at connect time.
+func TestTszAsksWhereToSave(t *testing.T) {
+	want := bytes.Repeat([]byte("trzsz-payload-"), 4096)
+	chosen := t.TempDir()
+	fallback := t.TempDir()
+	chooser := &askingChooser{folder: chosen, fallback: fallback}
+
+	conn, _, screen := trzszTerminal(t, chooser)
+	if _, err := conn.Write([]byte("tsz demo.bin\r")); err != nil {
+		t.Fatal(err)
+	}
+
+	target := filepath.Join(chosen, "demo.bin")
+	if !waitFor(t, 20*time.Second, func() bool {
+		got, err := os.ReadFile(target)
+		return err == nil && bytes.Equal(got, want)
+	}) {
+		t.Fatalf("tsz never wrote to the chosen folder: asks=%d, screen=%q",
+			chooser.count(), tailOf(screen))
+	}
+	if chooser.count() == 0 {
+		t.Fatal("the file arrived without asking where to save it")
+	}
+	if _, err := os.Stat(filepath.Join(fallback, "demo.bin")); err == nil {
+		t.Fatal("a copy landed in the connect-time default folder as well")
+	}
+}
+
+// TestTszCancelStartsNothing checks the other half of the dialog: saying no
+// must not leave a file behind, and must not leave the session waiting for a
+// client that already walked away.
+func TestTszCancelStartsNothing(t *testing.T) {
+	chosen := t.TempDir()
+	fallback := t.TempDir()
+	chooser := &askingChooser{folder: chosen, fallback: fallback, refuse: true}
+
+	conn, _, screen := trzszTerminal(t, chooser)
+	if _, err := conn.Write([]byte("tsz demo.bin\r")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Give a transfer that ignored the answer time to finish anyway.
+	time.Sleep(3 * time.Second)
+	for _, dir := range []string{chosen, fallback} {
+		if _, err := os.Stat(filepath.Join(dir, "demo.bin")); err == nil {
+			t.Fatalf("a canceled download still wrote into %s", dir)
+		}
+	}
+
+	// The remote's tsz was waiting for a handshake that will not come. Saying
+	// no has to release it, so the shell behind it answers again.
+	if _, err := conn.Write([]byte("echo still-here\r")); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if bytes.Contains(screen.Bytes(), []byte("still-here")) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("the session stayed behind a canceled tsz: screen=%q", tailOf(screen))
+}
+
+// TestOnlyTszAsks keeps the question on one side of a line: text that merely
+// mentions tsz, or a command that has other work in front of it, goes straight
+// to the shell without a dialog.
+func TestOnlyTszAsks(t *testing.T) {
+	chosen := t.TempDir()
+	chooser := &askingChooser{folder: chosen, fallback: t.TempDir()}
+	conn, _, screen := trzszTerminal(t, chooser)
+
+	for _, line := range []string{"echo tsz demo.bin", "ls\r", "cd /tmp && tsz demo.bin\r"} {
+		if _, err := conn.Write([]byte(line)); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.HasSuffix([]byte(line), []byte("\r")) {
+			if _, err := conn.Write([]byte("\r")); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if got := chooser.count(); got != 0 {
+		t.Fatalf("a dialog opened %d time(s) for lines that do not run tsz: screen=%q",
+			got, tailOf(screen))
+	}
+}
+
+// tailOf is a bounded view of what the terminal saw, for failure messages.
+func tailOf(b *syncBuffer) []byte {
+	data := b.Bytes()
+	if len(data) > 1200 {
+		data = data[len(data)-1200:]
+	}
+	return data
+}
+
+// trzszTerminalNoDrain is trzszTerminal without the reader, for bisection.
+func trzszTerminalNoDrain(t *testing.T, dl string) (*transferConn, string) {
+	t.Helper()
+	dir := t.TempDir()
+	payload := bytes.Repeat([]byte("trzsz-payload-"), 4096)
+	if err := os.WriteFile(filepath.Join(dir, "demo.bin"), payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := sshtest.New(sshtest.Options{User: "tester", Password: "trzsz-pass", Shell: sshtest.TrzszShell{Dir: dir}.Run})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { srv.Close() })
+	host, portText, err := net.SplitHostPort(srv.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app, err := NewApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { app.Close() })
+	sess, err := app.mgr.Connect(sshx.Config{Host: host, Port: port, User: "tester", Password: "trzsz-pass"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := newTransferConn(sess, encode.UTF8, fixedChooser{dir: dl})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	return conn, dir
 }

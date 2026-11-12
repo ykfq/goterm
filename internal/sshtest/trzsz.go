@@ -184,6 +184,11 @@ func expectFrame(rd *bufio.Reader, want string) (string, error) {
 		return "", err
 	}
 	if id != want {
+		if payload != "" {
+			// A #FAIL frame carries the client's own reason; dropping it turns
+			// a transfer failure into a puzzle.
+			return "", fmt.Errorf("expected #%s, got #%s: %s", want, id, payload)
+		}
 		return "", fmt.Errorf("expected #%s, got #%s", want, id)
 	}
 	return payload, nil

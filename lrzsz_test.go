@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,7 +63,7 @@ func dialLrzsz(t *testing.T, host string, port int) *sshx.Session {
 
 // drain keeps the terminal side reading: the filter draws into that stream, and
 // an unread pipe would stall the session.
-func drain(conn interface{ Read([]byte) (int, error) }) *bytes.Buffer {
+func drain(conn interface{ Read([]byte) (int, error) }) *syncBuffer {
 	var mu syncBuffer
 	go func() {
 		buf := make([]byte, 4096)
@@ -76,7 +77,7 @@ func drain(conn interface{ Read([]byte) (int, error) }) *bytes.Buffer {
 			}
 		}
 	}()
-	return mu.Buffer()
+	return &mu
 }
 
 // TestLrzszUpload goes `rz` on the remote, picks the file through the chooser,
@@ -157,3 +158,81 @@ func TestLrzszDownload(t *testing.T) {
 
 var _ = errors.New
 var _ = zmodem.ErrCanceled
+
+// TestLrzszCancelReleasesTheRemote is the "sz got stuck" regression. Dismissing
+// the folder dialog has to say so on the wire: a remote sz left waiting for the
+// ZRINIT that never comes keeps its shell behind it with the terminal in raw
+// mode, so Ctrl+C and Enter both land in a protocol read and only closing the
+// tab got out.
+func TestLrzszCancelReleasesTheRemote(t *testing.T) {
+	host, port, dir := lrzszServer(t)
+	if err := os.WriteFile(filepath.Join(dir, "give.txt"), []byte("payload"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sess := dialLrzsz(t, host, port)
+	conn, err := newTransferConn(sess, encode.UTF8, fixedChooser{dir: dir, refuse: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	screen := drain(conn)
+	// The highlight layer decorates what the shell prints, so the test reads
+	// the screen the way a person would: the words, without the colour codes.
+	plain := func() string { return stripPasteControl(string(screen.Bytes())) }
+
+	if _, err := conn.Write([]byte("sz give.txt\r")); err != nil {
+		t.Fatal(err)
+	}
+	if !waitFor(t, 20*time.Second, func() bool { return strings.Contains(plain(), "canceled") }) {
+		t.Fatalf("the canceled download was never reported on the wire: screen=%q", plain())
+	}
+
+	// The prompt is the proof that matters: the remote's sz exited instead of
+	// waiting, so the shell behind it takes commands again.
+	if _, err := conn.Write([]byte("ping\r")); err != nil {
+		t.Fatal(err)
+	}
+	if !waitFor(t, 20*time.Second, func() bool { return strings.Contains(plain(), "unknown command") }) {
+		t.Fatalf("the session stayed behind a canceled sz: screen=%q", plain())
+	}
+}
+
+// waitFor polls cond until it holds or the wait runs out.
+func waitFor(t *testing.T, wait time.Duration, cond func() bool) bool {
+	t.Helper()
+	deadline := time.Now().Add(wait)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return cond()
+}
+
+// TestZmodemCancelIsAbortThenFin reads the cancel sequence back with the same
+// parser a peer uses, so what is asserted is the protocol, not the bytes: the
+// remote's lrzsz has to see a transfer that is off followed by a session that
+// is closed.
+func TestZmodemCancelIsAbortThenFin(t *testing.T) {
+	r := zmodem.NewReader(bytes.NewReader(zmodem.Cancel()))
+	first, err := r.Next()
+	if err != nil {
+		t.Fatalf("first cancel header: %v", err)
+	}
+	second, err := r.Next()
+	if err != nil {
+		t.Fatalf("second cancel header: %v", err)
+	}
+	if first.Type != zmodem.ZABORT || second.Type != zmodem.ZFIN {
+		t.Fatalf("cancel is %d then %d, want ZABORT(%d) then ZFIN(%d)",
+			first.Type, second.Type, zmodem.ZABORT, zmodem.ZFIN)
+	}
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}

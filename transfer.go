@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/trzsz/trzsz-go/trzsz"
 
@@ -50,6 +52,10 @@ type transferConn struct {
 	chooser Chooser
 	// notice reports a transfer problem to the status bar.
 	notice func(string)
+	// askDownload runs the folder dialog before a typed tsz reaches the shell.
+	askDownload func() bool
+	// typed is the line being typed, kept to recognise a submitted tsz.
+	typed []byte
 
 	closeOnce sync.Once
 }
@@ -115,6 +121,10 @@ type lrzszPeer struct {
 
 	// progressLen is the last line drawn, for in-place redraw.
 	progressLen int
+	// quiet runs until a canceled transfer's goodbye may still arrive. Taking
+	// over again inside that window would answer the dead session's ZFIN with a
+	// fresh file dialog.
+	quiet time.Time
 }
 
 func newLrzszPeer(c *transferConn) *lrzszPeer {
@@ -141,6 +151,31 @@ func newTransferConn(s *sshx.Session, enc encode.Name, chooser Chooser) (*transf
 		outW:    outW,
 		chooser: chooser,
 	}
+	// tsz is asked the same folder question sz asks. The question is asked on
+	// the way *out* of the terminal — the Enter that submits a `tsz ...` line
+	// waits for the answer — because the library decides where a download lands
+	// the instant it sees the remote's marker, with no hook in between. Pausing
+	// the byte stream instead was measured to break trzsz-go's handshake on some
+	// timings, so nothing here touches the protocol.
+	filterReady := make(chan struct{})
+	var flt *trzsz.TrzszFilter
+	c.askDownload = func() bool {
+		if chooser == nil {
+			return true
+		}
+		dir, err := chooser.ChooseDownloadFolder("")
+		if err != nil || strings.TrimSpace(dir) == "" {
+			return false
+		}
+		select {
+		case <-filterReady:
+		case <-time.After(2 * time.Second):
+		}
+		if flt != nil {
+			flt.SetDefaultDownloadPath(dir)
+		}
+		return true
+	}
 	c.peer = newLrzszPeer(c)
 	c.dec = newDecodingReader(c.peer, enc)
 	c.hl = highlight.NewReader(c.dec)
@@ -154,6 +189,8 @@ func newTransferConn(s *sshx.Session, enc encode.Name, chooser Chooser) (*transf
 	c.filter = trzsz.NewTrzszFilter(inR, outW, sessionIn{s}, raw, trzsz.TrzszOptions{
 		TerminalColumns: 100,
 	})
+	flt = c.filter
+	close(filterReady)
 	// trzsz needs a default landing folder before it can accept a tsz, but
 	// asking for one here would pop a modal dialog on every connect. Use the
 	// configured downloads folder; a transfer only asks the user when it has
@@ -189,7 +226,90 @@ func (c *transferConn) SetEncoding(name encode.Name) { c.dec.SetEncoding(name) }
 
 // Write sends terminal input through the trzsz filter, which turns a typed
 // `trz`/`tsz` into an upload and otherwise forwards the bytes to SSH.
-func (c *transferConn) Write(p []byte) (int, error) { return c.inW.Write(p) }
+// Write carries the terminal's keystrokes to the session, with one addition: a
+// submitted `tsz ...` line waits here for the folder question, so a trzsz
+// download lands where the user said instead of in the folder recorded at
+// connect time — the same question sz asks.
+//
+// Holding the Enter is the only quiet place this fits. trzsz-go picks the
+// landing folder the instant the remote's marker arrives, with no hook in
+// between, and pausing the byte stream ahead of that marker was measured to
+// break its handshake. The keystroke is ours to hold: no protocol is in flight
+// while a line sits unsent.
+//
+// Saying no leaves the command sitting at the prompt unexecuted, which is what
+// "no" means for a command line.
+func (c *transferConn) Write(p []byte) (int, error) {
+	if c.askDownload == nil {
+		return c.inW.Write(p)
+	}
+	written := 0
+	for len(p) > 0 {
+		// Ordinary typing goes through in runs; the bytes below are the ones
+		// that change what is standing at the prompt.
+		n := bytes.IndexAny(p, "\r\n\x7f\b\x03")
+		if n < 0 {
+			n = len(p)
+		}
+		if n > 0 {
+			if _, err := c.inW.Write(p[:n]); err != nil {
+				return written, err
+			}
+			c.typed = keepTyping(c.typed, p[:n])
+			written += n
+			p = p[n:]
+			continue
+		}
+		switch p[0] {
+		case '\r', '\n':
+			if runsTsz(c.typed) && !c.askDownload() {
+				// The Enter is swallowed and the text stays where it is, so
+				// the command sits at the prompt exactly as "no" left it.
+				written++
+				p = p[1:]
+				continue
+			}
+			c.typed = nil
+		case 0x7f, 0x08:
+			if len(c.typed) > 0 {
+				c.typed = c.typed[:len(c.typed)-1]
+			}
+		case 0x03:
+			c.typed = nil
+		}
+		if _, err := c.inW.Write(p[:1]); err != nil {
+			return written, err
+		}
+		written++
+		p = p[1:]
+	}
+	return written, nil
+}
+
+// runsTsz reports whether a submitted line starts a trzsz download. Only the
+// first word counts: `cd /tmp && tsz x` is not something to interrupt.
+func runsTsz(line []byte) bool {
+	fields := bytes.Fields(line)
+	if len(fields) == 0 {
+		return false
+	}
+	switch string(fields[0]) {
+	case "tsz", "tsz.exe":
+		return true
+	}
+	return false
+}
+
+// keepTyping remembers what has been typed since the last newline, bounded so
+// a paste cannot grow the buffer without end.
+func keepTyping(have, added []byte) []byte {
+	keep := append(have, added...)
+	const maxTyped = 4096
+	if len(keep) > maxTyped {
+		keep = keep[len(keep)-maxTyped:]
+	}
+	return keep
+}
 
 func (c *transferConn) Resize(cols, rows int) error {
 	c.filter.SetTerminalColumns(int32(cols))
@@ -316,6 +436,15 @@ func (p *lrzszPeer) feed(chunk []byte) bool {
 		p.mu.Unlock()
 		return false
 	}
+	if time.Now().Before(p.quietAt()) {
+		// The bytes belong to a transfer the user just canceled: on screen,
+		// not into a new session.
+		p.mu.Lock()
+		p.relay = append(p.relay, joined...)
+		p.signal()
+		p.mu.Unlock()
+		return false
+	}
 	p.mu.Lock()
 	p.relay = append(p.relay, joined[:at]...)
 	p.active = true
@@ -398,9 +527,11 @@ func (p *lrzszPeer) send() error {
 	}
 	paths, err := p.c.chooser.ChooseUpload(false)
 	if err != nil {
+		p.abort()
 		return err
 	}
 	if len(paths) == 0 {
+		p.abort()
 		return zmodem.ErrCanceled
 	}
 	files, err := zmodem.ReadPaths(paths)
@@ -426,9 +557,11 @@ func (p *lrzszPeer) receive() error {
 	}
 	dir, err := p.c.chooser.ChooseDownloadFolder("")
 	if err != nil {
+		p.abort()
 		return err
 	}
 	if strings.TrimSpace(dir) == "" {
+		p.abort()
 		return zmodem.ErrCanceled
 	}
 	saved, err := (&zmodem.Receiver{In: p.stream, Out: sessionIn{p.c.sess}, Dir: dir, On: p.progress("<- ")}).Receive()
@@ -439,6 +572,27 @@ func (p *lrzszPeer) receive() error {
 }
 
 var errNoChooser = errors.New("no file dialog available")
+
+// abort ends a transfer the user walked away from, and says so on the wire.
+//
+// Both dialogs can be dismissed — no folder for a download, no files for an
+// upload — and in both cases a remote lrzsz is already running, waiting for the
+// ZRINIT we were about to send. Leaving it there is the "sz got stuck" bug: the
+// peer holds the terminal in raw mode, its shell waits behind it, and every key
+// the user presses lands in a protocol read that treats it as a header byte.
+func (p *lrzszPeer) abort() {
+	p.println("\x1b[36mlrzsz\x1b[0m canceled")
+	p.mu.Lock()
+	p.quiet = time.Now().Add(2 * time.Second)
+	p.mu.Unlock()
+	_, _ = sessionIn{p.c.sess}.Write(zmodem.Cancel())
+}
+
+func (p *lrzszPeer) quietAt() time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.quiet
+}
 
 // relayWriter hands status lines to the terminal through the peer's queue
 // instead of the filter's pipe. Writing the pipe directly would block, because

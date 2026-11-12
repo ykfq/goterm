@@ -170,6 +170,18 @@ func (s *Sender) waitFor(r *Reader, timeout time.Duration, want ...byte) error {
 	}
 }
 
+// Cancel is the header pair that releases a peer waiting on us: ZABORT says
+// this transfer is off, ZFIN says the session is over.
+//
+// Walking away without it is what makes a canceled download look like a hung
+// session. The remote sz is sitting in its protocol read with the terminal in
+// raw mode, so Ctrl+C goes to it as one more byte of a header it never
+// finishes, and Enter is a line ending in a stream that reads no lines. Its
+// shell waits behind it, and nothing but closing the tab stops that.
+func Cancel() []byte {
+	return append(hexHeader(ZABORT, nil), hexHeader(ZFIN, nil)...)
+}
+
 // Receiver drives the peer that runs `rz`: it announces ZRINIT, accepts files
 // into Dir, and closes with ZFIN.
 type Receiver struct {

@@ -11,9 +11,16 @@ import (
 type fixedChooser struct {
 	dir    string
 	upload []string
+	// refuse stands in for a user who hits Cancel on the folder dialog.
+	refuse bool
 }
 
-func (f fixedChooser) ChooseDownloadFolder(string) (string, error) { return f.dir, nil }
+func (f fixedChooser) ChooseDownloadFolder(string) (string, error) {
+	if f.refuse {
+		return "", errors.New("canceled")
+	}
+	return f.dir, nil
+}
 
 func (f fixedChooser) DefaultDownloadFolder() (string, error) { return f.dir, nil }
 
@@ -37,3 +44,10 @@ func (s *syncBuffer) Write(p []byte) (int, error) {
 }
 
 func (s *syncBuffer) Buffer() *bytes.Buffer { return &s.buf }
+
+// Bytes is the race-free read: the drain goroutine writes while a test looks.
+func (s *syncBuffer) Bytes() []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]byte(nil), s.buf.Bytes()...)
+}
