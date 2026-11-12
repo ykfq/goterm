@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -385,6 +386,16 @@ func (a *App) promptDialog(c *ui.Context) {
 			ui.Text(c, p.Hint).FontSize(12).TextColor(c.Theme().TextMuted)
 			var input ui.Element
 			if p.Kind == promptOTP {
+				// A one-time code is 6 to 8 digits (the RFC 6238 window is six;
+				// some issuers add two). Filtering on the way in means a paste
+				// with a hyphen or a stray letter cannot get as far as dialing.
+				p.Value = digitsOnly(p.Value)
+				if utf8.RuneCountInString(p.Value) > otpMaxDigits {
+					p.Value = string([]rune(p.Value)[:otpMaxDigits])
+				}
+				// No MaxLength: the filter above already bounds the digits, and a
+				// length cap would cut the raw text first, leaving "1234" out of a
+				// typed "ab12cd34".
 				input = ui.TextInput(c, &p.Value).Placeholder("6-digit code").AutoFocus()
 			} else {
 				input = ui.TextInput(c, &p.Value).Password().AutoFocus()

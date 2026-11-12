@@ -109,8 +109,12 @@ func (a *App) sidebar(c *ui.Context) {
 
 // rail is the sidebar folded away: one narrow strip that keeps the way back
 // visible, so a hidden panel never leaves the window looking broken.
+// railWidth is the folded sidebar's strip: wide enough for the way back, and
+// the band the title row keeps clear on the left so the tabs never sit over it.
+const railWidth = 34
+
 func (a *App) rail(c *ui.Context) {
-	ui.Column(c).Width(34).FillHeight().Background(c.Theme().Surface).Border(1, c.Theme().Border).Children(func() {
+	ui.Column(c).Width(railWidth).FillHeight().Background(c.Theme().Surface).Border(1, c.Theme().Border).Children(func() {
 		ui.Row(c).Padding(6, 4).Justify(ui.Center).Children(func() {
 			ui.Button(c, "›").Label("Show sidebar").Tooltip("Show sidebar (Ctrl+Shift+B)").OnClick(a.toggleSidebar)
 		})
@@ -288,22 +292,30 @@ func (a *App) main(c *ui.Context) {
 // spend before the terminal — title, menu, tabs — cost one.
 func (a *App) titleBar(c *ui.Context) {
 	bar := c.TitleBar()
-	height := float32(38)
+	height := float32(30)
 	if bar.Height > height {
 		height = bar.Height
 	}
-	ui.Row(c).Height(height).Padding(0, bar.Right, 0, bar.Left).Gap(8).
+	// The band left of the tabs is exactly as wide as the sidebar, so the tab
+	// strip starts on the same vertical line as the terminal below it.
+	left := float32(a.prefs.SidebarWidth)
+	if a.sidebarHidden {
+		left = railWidth
+	}
+	if left < 120 {
+		left = 120 // the mark and the name still fit
+	}
+	ui.Row(c).Height(height).Padding(0, bar.Right, 0, bar.Left).Gap(6).
 		Background(c.Theme().Surface).AlignItems(ui.Center).Children(func() {
-		// Only this part drags the window: a drag handle over the tabs would
-		// turn a mis-aimed click into a window move instead of a tab switch.
-		mark := ui.Row(c).Padding(0, 8).Gap(6).AlignItems(ui.Center).DragWindow()
-		mark.Children(func() {
+		ui.Row(c).Width(left).Padding(0, 6).Gap(4).AlignItems(ui.Center).Children(func() {
 			if src := a.mark(); src != nil {
-				ui.Image(c, src).Size(18, 18)
+				// The mark is the pointer's way to the menus; only the name
+				// beside it drags the window, so a click on one is never both.
+				ui.Image(c, src).Size(16, 16).Padding(5).Radius(5).Tooltip("Menu").
+					Menu(func(m *ui.Menu) { a.markMenu(m) })
 			}
-			ui.Text(c, "GoTerm").FontSize(12).Bold()
+			ui.Text(c, "GoTerm").FontSize(11).Bold().Grow(1).DragWindow()
 		})
-		ui.Box(c).Width(1).Height(18).Background(c.Theme().Border)
 		ui.ScrollHorizontal(c).Grow(1).Children(func() {
 			ui.Row(c).Gap(3).AlignItems(ui.Center).Children(func() {
 				for i, t := range a.tabs {
@@ -339,7 +351,7 @@ func (a *App) mark() ui.ImageSource {
 }
 
 func (a *App) tabChip(c *ui.Context, i int, t *Tab) {
-	chip := ui.Row(c.Key(t.ID)).Height(28).Padding(0, 9).Gap(6).Radius(7).Focusable().Label("Tab " + tabTitle(t))
+	chip := ui.Row(c.Key(t.ID)).Height(26).Padding(0, 8).Gap(6).Radius(6).Focusable().Label("Tab " + tabTitle(t))
 	active := i == a.active
 	if active {
 		chip.Background(c.Theme().Surface)
@@ -574,6 +586,11 @@ func (a *App) reconnect(t *Tab) {
 	t.SearchOpen = false
 	t.Status = StatusConnecting
 	t.Err = ""
+	// The one-time code of a two-factor host died with the old connection's
+	// 30-second window. Keeping it here would dial with an expired code and
+	// end in "authentication failed" with nothing asked; clearing it sends the
+	// reconnect back through the OTP prompt, like a first connect.
+	t.OV.TwoFactorCode = ""
 	go func() {
 		if term != nil {
 			_ = term.Close()

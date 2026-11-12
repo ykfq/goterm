@@ -64,8 +64,9 @@
   接口探测路径）。ASCII 词只整词匹配（ERR 不打错 error 的半个词），含非 ASCII（日文/中文等）
   按子串匹配；不覆盖内置规则与程序自己的颜色。
 - **单行顶栏**：隐藏系统标题栏（`TitleBarHidden`）与菜单栏（`AutoHideMenuBar`，Alt/F10 唤出、
-  快捷键照常），视图自绘一行：方形徽标 + "GoTerm"（可拖动窗口）+ 标签 + 新建按钮，
-  平台窗口按钮由 mygo 画在右侧。原先"标题栏 / 菜单栏 / 标签栏"三行变一行。
+  快捷键照常），视图自绘 30px 一行：方形徽标（点开与 Alt/F10 相同的菜单）+ "GoTerm"（拖动窗口）
+  + 标签 + 新建按钮，平台窗口按钮由 mygo 画在右侧。左侧留白与侧栏同宽，标签从侧栏右缘开始；
+  折叠后对齐窄轨。菜单由 `menu.go` 的一张表同时生成原生菜单栏与徽标菜单。
 - **侧栏折叠修复**：折叠后 `main` 列缺 `FillHeight`，列按内容收缩，标签栏与状态栏被拉进
   窗芯；现在外层 Row `Grow+Fill+Stretch`、内层 Column `Grow+FillHeight`。
   `TestCollapsedSidebarKeepsChromeAtTheEdges` 钉住（回退到旧布局时状态栏实测落在 y=462/800）。
@@ -133,7 +134,7 @@
 | 只有勾选才落密钥环 | `SetHostSecret` + 对话框"记住"开关 | 🚧 |
 | 跳板机口令单独一条 | `ConnectOverrides.ProxyPassword`，`(proxy)` 错误后缀 | 🚧 |
 | 跳板机 + 加密私钥弹窗 | 同上，`ProxyPassphrase` | 🚧 |
-| 2FA（动态口令追加） | 原生单字段对话框，仅密码认证 | 🚧 |
+| 2FA（动态口令追加） | 原生单字段对话框，仅密码认证；缺码有独立哨兵 `ErrTwoFactorRequired`，**重连清空旧码并重新弹窗**；输入框只收数字、上限 8 位 | ✅ |
 | 主机密钥 TOFU / 不一致拒连 / forget | `HostKeyStore` 不变；新增 Known hosts 面板 | 🚧 |
 | 半开连接 / 握手超时 | `internal/sshx` 不变 | ✅ |
 | 保活不发回车（红线 1） | 不变 | ✅ |

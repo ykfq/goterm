@@ -402,6 +402,14 @@ func (s *Store) SSHConfig(id string, cols, rows int) (sshx.Config, error) {
 // forward. `store_test.go` pins both sentences so the two halves cannot drift.
 var ErrPasswordRequired = errors.New("password required")
 
+// ErrTwoFactorRequired marks a two-factor host whose one-time code is missing.
+// It is its own sentinel rather than part of ErrPasswordRequired because the
+// two ask different questions: a password is typed once and remembered, a code
+// is typed for every login and never stored. A reconnect lands here, which is
+// how a tab that dropped asks for a fresh code instead of dialing with the
+// expired one.
+var ErrTwoFactorRequired = errors.New("one-time code required")
+
 // ConnectOverrides is what the connect-time prompts collected. Empty means
 // "nothing extra this attempt"; none of it is persisted by this call.
 type ConnectOverrides struct {
@@ -460,7 +468,8 @@ func (s *Store) SSHConfigWith(id string, cols, rows int, ov ConnectOverrides) (s
 			// an empty one is a refusal, not a silent password-only attempt.
 			code := strings.TrimSpace(ov.TwoFactorCode)
 			if code == "" {
-				return sshx.Config{}, fmt.Errorf("%s needs a two-factor code: enter the one-time code that goes with the saved password", host.Name)
+				return sshx.Config{}, fmt.Errorf("%w: %s needs a two-factor code; enter the one-time code that goes with the saved password",
+					ErrTwoFactorRequired, host.Name)
 			}
 			cfg.Password = secret + code
 		}

@@ -276,7 +276,7 @@ func (a *App) Open() {
 		// work regardless. Together that is one chrome row where there were
 		// three, which is rows of terminal the window did not have.
 		TitleBarStyle:   mygo.TitleBarHidden,
-		TitleBarHeight:  40,
+		TitleBarHeight:  30,
 		AutoHideMenuBar: true,
 	})
 	// The monogram, not the wordmark: this is the 16-pixel title bar icon, where
@@ -547,6 +547,14 @@ func (a *App) connectError(t *Tab, err error) {
 	msg := err.Error()
 	proxy := strings.Contains(msg, "(proxy)")
 	switch {
+	case errors.Is(err, hoststore.ErrTwoFactorRequired):
+		// The code is one-shot: it belongs to a 30-second window and is never
+		// stored, so every connect (a reconnect included) starts without one.
+		if h, ok := a.hosts.Get(t.HostID); ok {
+			a.askOTP(t, h)
+			return
+		}
+		a.failTab(t, err)
 	case errors.Is(err, hoststore.ErrPasswordRequired):
 		a.askSecret(t, promptPassword, proxy)
 	case errors.Is(err, sshx.ErrPassphraseRequired):
@@ -571,15 +579,21 @@ func (a *App) connectError(t *Tab, err error) {
 			}
 		})
 	default:
-		a.post(func() {
-			t.Status = StatusFailed
-			t.Err = friendlyError(err)
-			a.status = friendlyError(err)
-			if a.win != nil {
-				a.win.Invalidate()
-			}
-		})
+		a.failTab(t, err)
 	}
+}
+
+// failTab turns a failure into the tab's status and the status bar's one line.
+func (a *App) failTab(t *Tab, err error) {
+	a.post(func() {
+		msg := friendlyError(err)
+		t.Status = StatusFailed
+		t.Err = msg
+		a.status = msg
+		if a.win != nil {
+			a.win.Invalidate()
+		}
+	})
 }
 
 // hostUsesPassword tells whether another password attempt makes sense: a

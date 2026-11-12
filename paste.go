@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/egoist/mygo/transfer"
 )
@@ -143,4 +144,23 @@ func (a *App) pasteText(t *Tab, d transfer.Data) bool {
 		a.win.Invalidate()
 	}
 	return true
+}
+
+// digitsOnly keeps a one-time code to what TOTP and HOTP put in it: its
+// digits. Spaces and hyphens are what people type a code with when they read
+// it off a phone; every other character would only make authentication fail.
+func digitsOnly(s string) string {
+	// Escape sequences carry digits of their own ("1;32" is a colour), so they
+	// go first; a code pasted from a terminal would otherwise turn into one.
+	s = stripPasteControl(s)
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		r, n := utf8.DecodeRuneInString(s[i:])
+		if r >= '0' && r <= '9' {
+			b.WriteByte(byte(r))
+		}
+		i += n
+	}
+	return b.String()
 }

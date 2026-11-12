@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/ykfq/goterm/internal/hoststore"
 )
@@ -75,6 +77,10 @@ func (a *App) askSecret(t *Tab, kind promptKind, proxy bool) {
 	}
 }
 
+// otpMaxDigits bounds the one-time code field: 6 digits is the common case,
+// 8 the longest issuer in use. Nothing longer can authenticate anywhere.
+const otpMaxDigits = 8
+
 func (a *App) askOTP(t *Tab, h hoststore.Host) {
 	a.prompt = &Prompt{
 		Open:  true,
@@ -95,6 +101,15 @@ func (a *App) submitPrompt() {
 		return
 	}
 	value := strings.TrimSpace(p.Value)
+	if p.Kind == promptOTP {
+		// The field filters as it is typed and pasted; this catches the rest
+		// (a value set before the field was shown) before a login is spent.
+		value = digitsOnly(value)
+		if n := utf8.RuneCountInString(value); n == 0 || n > otpMaxDigits {
+			p.Err = fmt.Sprintf("The code is %d to %d digits, nothing else.", 6, otpMaxDigits)
+			return
+		}
+	}
 	if value == "" {
 		p.Err = "Enter a value first."
 		return

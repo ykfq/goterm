@@ -100,6 +100,22 @@ func TestCollapsedSidebarKeepsChromeAtTheEdges(t *testing.T) {
 		if tab.Y > 80 {
 			t.Errorf("hidden=%v: the tab strip sits at y=%.0f, not at the top", hidden, tab.Y)
 		}
+		// The strip starts on the sidebar's right edge, so it lines up with the
+		// terminal below it instead of beginning at the window's left edge. The
+		// chip's own box is the measure; its label sits inside its padding.
+		chip, ok := tt.Find("Tab deploy")
+		if !ok {
+			t.Fatalf("hidden=%v: no tab chip to measure", hidden)
+		}
+		if !hidden {
+			want := app.prefs.SidebarWidth
+			if chip.X < want-4 || chip.X > want+16 {
+				t.Errorf("hidden=%v: the tab strip starts at x=%.0f, want about %.0f (the sidebar's edge)", hidden, chip.X, want)
+			}
+		}
+		if hidden && chip.X < railWidth {
+			t.Errorf("with the sidebar folded away the tab strip starts at x=%.0f, over the rail", chip.X)
+		}
 		status, ok := tt.Find(statusText)
 		if !ok {
 			t.Fatalf("hidden=%v: the status bar did not render: %q", hidden, tt.Texts())
