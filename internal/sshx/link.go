@@ -28,17 +28,26 @@ type connRef struct {
 	closers []io.Closer
 	every   time.Duration
 
-	// The idle window. A keepalive exists to notice a dead link and to defend a
-	// session that someone is using; it is not a way to hold a login open for
-	// ever. Once the user has typed nothing for `idle`, the probes stop and the
-	// connection is left to the server's own idle policy — a login forgotten on
-	// Friday dies over the weekend instead of surviving until Monday.
+	// The ledge. A keepalive defence is not a way to hold a login open for ever,
+	// but "the user has not typed" is the wrong thing to stop on: a bastion —
+	// JumpServer is the one this was written against — watches the *connection*,
+	// not the keyboard, and hangs up a session that has sent nothing for an hour,
+	// however plainly the person is still reading its output. Stopping the probes
+	// on a quiet keyboard therefore does not let the server's idle policy decide;
+	// it guarantees the drop, at exactly the moment the user looked away.
+	//
+	// So the probes do not stop while the user is there. The defence ends once
+	// nothing has been typed for `idle` *and* the user has declared themselves
+	// away (`detach`, the window obscured or minimised): a login left behind on
+	// Friday dies over the weekend instead of surviving until Monday, and one
+	// that is on screen is never cut off underneath the person reading it.
 	//
 	// The clock is per connection (a duplicate shares it), and only typed input
-	// resets it: remote output, window resizes and the probes themselves do not
-	// count as "the user is here".
+	// resets it. The ledge only narrows the window; it never ends a session
+	// that someone has interacted with inside it.
 	idleMu       sync.Mutex
 	idle         time.Duration
+	away         bool
 	idlePaused   bool
 	lastActivity atomic.Int64 // unix nanoseconds of the last typed input
 
@@ -159,6 +168,19 @@ func (l *connRef) touch() {
 	}
 }
 
+// setDetached records whether the user has put this connection out of sight.
+// Going away starts the clock now: a tab obscured at 09:00 and never touched
+// must not be defended until 09:00 the next day just because it was typed into
+// at 08:59 and the app was then hidden.
+func (l *connRef) setDetached(detached bool) {
+	l.idleMu.Lock()
+	l.away = detached
+	l.idleMu.Unlock()
+	if detached {
+		l.lastActivity.Store(time.Now().UnixNano())
+	}
+}
+
 // setIdleTimeout replaces the idle window; a settings change reaches
 // connections that are already open through this. There is no timer to rearm —
 // the next keepalive tick re-evaluates the window.
@@ -168,29 +190,43 @@ func (l *connRef) setIdleTimeout(d time.Duration) {
 	l.idleMu.Unlock()
 }
 
-// probeAllowed is the keepalive gate: true while the user has been present
-// within the idle window. Running out of the window is announced once, because
-// "the session may go away by itself" is worth one line where the user is
-// looking. Resuming is announced from touch, the moment the user is back.
+// probeAllowed is the keepalive gate. It closes only when both halves of "the
+// user is gone" hold: nothing has been typed for the idle window, and the user
+// has put the window out of sight. Either one alone is not evidence of an
+// abandoned login, and stopping on the weaker signal is what loses sessions to
+// a bastion. Running out of the window is announced once, because "the session
+// may go away by itself" is worth one line where the user is looking. Resuming
+// is announced from touch, the moment the user is back.
 func (l *connRef) probeAllowed() bool {
 	l.idleMu.Lock()
 	limit := l.idle
 	paused := l.idlePaused
-	announce := false
-	if limit > 0 {
-		want := time.Since(time.Unix(0, l.lastActivity.Load())) >= limit
-		if want && !paused {
-			paused = true
-			l.idlePaused = true
-			announce = true
-		}
-	}
+	quiet := limit > 0 && time.Since(time.Unix(0, l.lastActivity.Load())) >= limit
+	away := l.away
+	want := quiet && away
 	l.idleMu.Unlock()
 
-	if announce {
-		l.announce("info", ": idle for "+humanLifetime(limit)+" — keepalive signals stopped, so the server may now drop this session")
+	if want && !paused {
+		l.idleMu.Lock()
+		paused = l.idlePaused
+		l.idlePaused = true
+		l.idleMu.Unlock()
+		if !paused {
+			l.announce("info", ": away for "+humanLifetime(limit)+" — keepalive signals stopped, so the server may now drop this session")
+		}
 	}
-	return !paused
+	if !want && paused {
+		// The user came back to a window that is on screen again. Resume at
+		// once rather than on a probe that may not come for another interval.
+		l.idleMu.Lock()
+		was := l.idlePaused
+		l.idlePaused = false
+		l.idleMu.Unlock()
+		if was {
+			l.announce("info", ": back at the keyboard — keepalive signals resumed")
+		}
+	}
+	return !paused && !want
 }
 
 // announce pushes one line to every tab on this connection, the way fail does:

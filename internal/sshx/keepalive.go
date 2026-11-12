@@ -25,13 +25,22 @@ import (
 // which is exactly the kind of surprise a keepalive must not cause.
 const (
 	// DefaultKeepAlive is how often an idle session is poked.
-	DefaultKeepAlive = 45 * time.Second
+	//
+	// Fifteen seconds, not forty-five: a bastion's idle policy is counted in
+	// minutes, and the first cadence that fits inside the shortest policy still
+	// leaves room for the policy's own jitter and for a probe or two being slow.
+	// The cost is one four-byte request and its reply per quarter minute.
+	DefaultKeepAlive = 15 * time.Second
 	// keepAliveStrikes is how many unanswered probes in a row mean "the link is
 	// gone" rather than "the link is slow".
 	keepAliveStrikes = 3
 	// minKeepAlive floors the interval so a bad config cannot turn the probe
 	// into a hot loop.
 	minKeepAlive = time.Second
+	// probeReplyWithin caps how long one probe waits for its reply. Three of
+	// these still fit inside DefaultKeepAlive, so a slow-but-alive server is
+	// never misjudged because the cadence and the timeout were the same number.
+	probeReplyWithin = 5 * time.Second
 	// keepAliveRequest is the OpenSSH global request. A server that does not
 	// implement it still replies "no", and a reply — of either kind — proves
 	// the connection is alive.
@@ -68,7 +77,11 @@ func keepAlive(stop <-chan struct{}, sender probeSender, every time.Duration, st
 				failures = 0
 				continue
 			}
-			if err := probe(sender, every); err != nil {
+			within := every
+			if within > probeReplyWithin {
+				within = probeReplyWithin
+			}
+			if err := probe(sender, within); err != nil {
 				failures++
 				if failures >= strikes {
 					dead(fmt.Sprintf("%d keepalives in a row were not answered (%v)", failures, err))

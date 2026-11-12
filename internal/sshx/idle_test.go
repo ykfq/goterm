@@ -1,13 +1,16 @@
 /*
- * The idle window.
+ * The idle window, and the ledge it forms with "away".
  *
  * A keepalive exists to notice a dead link and to defend a session that someone
- * is using. It is not a way to hold a login open for ever: once the user has
- * typed nothing for the configured window, the probe signals stop and the
- * connection is left to the server's own idle policy. These tests pin the two
- * halves of that promise — an active session is never cut off, and a forgotten
- * one stops being defended — plus the plumbing that lets a duplicated tab share
- * the same clock instead of buying its own.
+ * is using. It is not a way to hold a login open for ever. But "no keystrokes"
+ * is not the same thing as "nobody is there": a bastion hangs up on a quiet
+ * connection whether or not someone is reading its output, so a quiet keyboard
+ * on a visible window must not stop the probes. The defence ends only when the
+ * user has typed nothing for the window *and* has put the window out of sight.
+ *
+ * These tests pin both halves — an unwatched session stops being defended, a
+ * watched one is never cut off underneath the user — plus the plumbing that
+ * lets a duplicated tab share the same clock instead of buying its own.
  */
 package sshx
 
@@ -30,17 +33,33 @@ func idleHarness(t *testing.T, idle time.Duration) (*harness, Config) {
 	return h, cfg
 }
 
-func TestIdleWindowStopsKeepAliveWithoutClosingTheSession(t *testing.T) {
+// away is what the app reports when the window is hidden, minimised or behind
+// another application.
+func (h *harness) away() { h.mgr.SetDetached(true) }
+
+func TestIdleStopNeedsTheWindowToBeOutOfSight(t *testing.T) {
 	h, cfg := idleHarness(t, 200*time.Millisecond)
 	sess := h.connect(cfg)
 	h.expectOutput(sess, readyMarker)
 
-	// The first keepalive tick past the window stops the probes and says so.
-	h.waitFor(sess, "the idle keepalive pause to be announced", func() bool {
+	// The keyboard is still and the window is on screen. The probes must keep
+	// going: this is somebody watching a build, not an abandoned login, and a
+	// bastion does not care which one it is.
+	time.Sleep(1200 * time.Millisecond)
+	if notices := h.rec.noticeText(); strings.Contains(notices, "keepalive signals stopped") {
+		t.Fatalf("a visible window's quiet session stopped being defended:\n%s", notices)
+	}
+	if sess.closed() {
+		t.Fatal("the idle window closed the session; it must only stop the probes")
+	}
+
+	// The user puts it away: now the defence ends, and it says so once.
+	h.away()
+	h.waitFor(sess, "the away notice", func() bool {
 		return strings.Contains(h.rec.noticeText(), "keepalive signals stopped")
 	})
 	if sess.closed() {
-		t.Fatal("the idle window closed the session; it must only stop the probes")
+		t.Fatal("going away closed the session; it must only stop the probes")
 	}
 
 	// The point of stopping rather than closing: the connection is still there,
@@ -55,14 +74,35 @@ func TestIdleWindowStopsKeepAliveWithoutClosingTheSession(t *testing.T) {
 	}
 }
 
+// Coming back into view is the other way out: a window the user restored is
+// defended again even if the keyboard has still said nothing.
+func TestComingBackIntoViewResumesTheProbes(t *testing.T) {
+	h, cfg := idleHarness(t, 150*time.Millisecond)
+	h.away()
+	sess := h.connect(cfg)
+	h.expectOutput(sess, readyMarker)
+	h.waitFor(sess, "the away notice", func() bool {
+		return strings.Contains(h.rec.noticeText(), "keepalive signals stopped")
+	})
+
+	h.mgr.SetDetached(false)
+	h.waitFor(sess, "the probes to resume", func() bool {
+		return strings.Contains(h.rec.noticeText(), "keepalive signals resumed")
+	})
+	if sess.closed() {
+		t.Fatalf("restoring the window closed the session: %+v", sess.Info())
+	}
+}
+
 func TestActivityDefersTheIdleWindow(t *testing.T) {
 	h, cfg := idleHarness(t, 250*time.Millisecond)
+	h.away() // the app is behind another window the whole time
 	sess := h.connect(cfg)
 	h.expectOutput(sess, readyMarker)
 
 	// Type an empty write every 60ms for well past the window. Nothing reaches
 	// the shell, but every write is user activity as far as the window is
-	// concerned.
+	// concerned — even though the window itself is out of sight.
 	stop := time.Now().Add(2200 * time.Millisecond)
 	for time.Now().Before(stop) {
 		h.send(sess, "")
@@ -83,6 +123,7 @@ func TestActivityDefersTheIdleWindow(t *testing.T) {
 
 func TestIdlePauseIsAnnouncedOnce(t *testing.T) {
 	h, cfg := idleHarness(t, 150*time.Millisecond)
+	h.away()
 	sess := h.connect(cfg)
 	h.expectOutput(sess, readyMarker)
 
@@ -108,7 +149,9 @@ func TestDuplicatedTabsShareTheIdleClock(t *testing.T) {
 	h.expectOutput(second, readyMarker)
 
 	// Typing in the duplicate is still the user being present on this
-	// connection, so both tabs keep their probes.
+	// connection — and the window is out of sight — so both tabs keep their
+	// probes.
+	h.away()
 	for i := 0; i < 26; i++ {
 		h.send(second, "")
 		time.Sleep(100 * time.Millisecond)
@@ -137,10 +180,17 @@ func TestSetIdleTimeoutReachesOpenSessions(t *testing.T) {
 	sess := h.connect(cfg)
 	h.expectOutput(sess, readyMarker)
 
-	// Nobody types; lowering the window must reach the open connection, not
-	// only the next one.
+	// Lowering the window must reach the open connection, not only the next
+	// one. A visible window still holds the probes: the setting is half of the
+	// decision, not all of it.
 	h.mgr.SetIdleTimeout(150 * time.Millisecond)
-	h.waitFor(sess, "the lowered idle window to pause the probes", func() bool {
+	time.Sleep(700 * time.Millisecond)
+	if notices := h.rec.noticeText(); strings.Contains(notices, "keepalive signals stopped") {
+		t.Fatalf("lowering the window stopped a visible session's probes:\n%s", notices)
+	}
+
+	h.away()
+	h.waitFor(sess, "the lowered window and an away window to pause the probes", func() bool {
 		return strings.Contains(h.rec.noticeText(), "keepalive signals stopped")
 	})
 	if sess.closed() {

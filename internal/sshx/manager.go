@@ -91,6 +91,11 @@ type Manager struct {
 	// app never sets — see SetIdleTimeout.
 	idleTimeout atomic.Int64
 
+	// away is whether the user has put the window out of sight. It joins the
+	// idle clock in deciding when keepalive stops defending a connection — see
+	// connRef. Set through SetDetached, which also reaches open connections.
+	away atomic.Bool
+
 	// Session logging. logMu also guards the snapshot of the session map that
 	// ConfigureSessionLogging needs, because a change applies to the sessions
 	// that are already open as well as to the next one.
@@ -163,6 +168,33 @@ func (m *Manager) SetIdleTimeout(d time.Duration) {
 		link.setIdleTimeout(d)
 	}
 }
+
+// SetDetached records whether the user has put the app out of sight — the
+// window hidden, minimised, or another application in front of it.
+//
+// This is half of the decision to stop keepalive signals (the other half is the
+// idle window). A connection that is on screen is defended however long its
+// keyboard has been still, because a bastion drops it on silence regardless of
+// who is reading; a connection nobody can see is not defended past the window,
+// so a login left behind over the weekend dies on its own.
+func (m *Manager) SetDetached(detached bool) {
+	m.away.Store(detached)
+
+	seen := make(map[*connRef]struct{})
+	m.mu.RLock()
+	for _, s := range m.sessions {
+		if s.link != nil {
+			seen[s.link] = struct{}{}
+		}
+	}
+	m.mu.RUnlock()
+	for link := range seen {
+		link.setDetached(detached)
+	}
+}
+
+// Detached is what SetDetached last recorded.
+func (m *Manager) Detached() bool { return m.away.Load() }
 
 // IdleTimeout is the window currently in force.
 func (m *Manager) IdleTimeout() time.Duration {
@@ -244,6 +276,7 @@ func (m *Manager) Connect(cfg Config) (*Session, error) {
 	}
 
 	link := newConnRef(conn, bastion, closers, cfg.KeepAliveInterval(), m.IdleTimeout())
+	link.setDetached(m.away.Load())
 	s := m.register(link, cfg, sh, fingerprint, started)
 
 	if tofuNote != "" {

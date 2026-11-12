@@ -147,6 +147,13 @@ type Options struct {
 	// lets the two-factor path be driven end to end locally.
 	TwoFactor bool
 
+	// HangUpAfterSilence reproduces the policy a bastion like JumpServer
+	// enforces: the connection is closed once nothing has been received on it
+	// for this long, whatever the client thinks. Only global requests and
+	// channel traffic count as activity — exactly the traffic a real bastion
+	// watches. Zero means no such policy, which is every other test.
+	HangUpAfterSilence time.Duration
+
 	Logger *log.Logger
 }
 
@@ -172,6 +179,17 @@ type Server struct {
 	// It is a scratch directory unless Options.SFTPRoot named one.
 	sftpRoot    string
 	sftpTempDir bool
+
+	// hungUp counts the times the silence watchdog closed a connection, so a
+	// test can tell "the session survived" from "the policy never fired".
+	hungUp atomic.Int64
+
+	// done is closed by Close, which releases the silence watchdog.
+	done chan struct{}
+
+	// quiet is when the last keepalive window saw activity from the client. Only
+	// read when Options.HangUpAfterSilence is set.
+	quiet atomic.Int64
 
 	closeOnce sync.Once
 	wg        sync.WaitGroup
@@ -246,7 +264,8 @@ func NewOn(addr string, opts Options) (*Server, error) {
 	}
 
 	s := &Server{listener: ln, cfg: cfg, hostKey: hostKey, shell: opts.Shell, logger: logger,
-		allowForwarding: opts.AllowForwarding}
+		allowForwarding: opts.AllowForwarding, done: make(chan struct{})}
+	s.quiet.Store(time.Now().UnixNano())
 	s.sftpRoot = opts.SFTPRoot
 	if s.sftpRoot == "" {
 		dir, err := os.MkdirTemp("", "sshtest-sftp-*")
@@ -259,7 +278,47 @@ func NewOn(addr string, opts Options) (*Server, error) {
 	}
 	s.wg.Add(1)
 	go s.acceptLoop()
+	if opts.HangUpAfterSilence > 0 {
+		s.wg.Add(1)
+		go s.silenceWatch(opts.HangUpAfterSilence)
+	}
 	return s, nil
+}
+
+// alive records that the client said something. Both the global-request reader
+// and the session channels call it, which is the same set of traffic a real
+// bastion sees — a keepalive request is visible to an SSH server; what happens
+// inside the PTY is not.
+func (s *Server) alive() { s.quiet.Store(time.Now().UnixNano()) }
+
+// silenceWatch closes every connection that has sent nothing for `window`,
+// the way a bastion with an idle policy does.
+func (s *Server) silenceWatch(window time.Duration) {
+	defer s.wg.Done()
+	// Check often enough that a short window in a test is honoured, and lazily
+	// enough that a long one costs nothing.
+	tick := window / 4
+	if tick < 10*time.Millisecond {
+		tick = 10 * time.Millisecond
+	}
+	if tick > 5*time.Second {
+		tick = 5 * time.Second
+	}
+	ticker := time.NewTicker(tick)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.done:
+			return
+		case <-ticker.C:
+			if time.Since(time.Unix(0, s.quiet.Load())) >= window {
+				s.hungUp.Add(1)
+				s.logger.Printf("hanging up: nothing from the client for %s", window)
+				s.CloseAllConns()
+				s.quiet.Store(time.Now().UnixNano()) // do not spin on a dead conn list
+			}
+		}
+	}
 }
 
 // Addr is the bound "host:port".
@@ -288,6 +347,7 @@ func (s *Server) AuthSuccess() int64 { return s.authOK.Load() }
 // Close stops listening and drops every live connection.
 func (s *Server) Close() error {
 	s.closeOnce.Do(func() {
+		close(s.done)
 		if err := s.listener.Close(); err != nil {
 			s.logger.Printf("close listener: %v", err)
 		}
@@ -308,6 +368,25 @@ func (s *Server) Close() error {
 // SFTPRoot is the directory the sftp subsystem starts in. Tests use it to lay
 // out remote files and to build remote paths without guessing where they landed.
 func (s *Server) SFTPRoot() string { return s.sftpRoot }
+
+// tee wraps an SSH channel in a reader that reports each read as activity.
+func (s *Server) tee(ch ssh.Channel) io.Reader {
+	return readerFunc(func(p []byte) (int, error) {
+		n, err := ch.Read(p)
+		if n > 0 {
+			s.alive()
+		}
+		return n, err
+	})
+}
+
+// readerFunc adapts a function to io.Reader.
+type readerFunc func([]byte) (int, error)
+
+func (f readerFunc) Read(p []byte) (int, error) { return f(p) }
+
+// HungUp counts the times the silence watchdog closed the client's connection.
+func (s *Server) HungUp() int64 { return s.hungUp.Load() }
 
 // CloseAllConns hangs up on clients but keeps listening — used to drive the
 // client's "connection lost" path while the port is still live.
@@ -356,7 +435,14 @@ func (s *Server) handleDirectTCPIP(newChannel ssh.NewChannel) {
 		_ = conn.Close()
 		return
 	}
-	go ssh.DiscardRequests(requests)
+	go func() {
+		for req := range requests {
+			s.alive()
+			if req.WantReply {
+				_ = req.Reply(false, nil)
+			}
+		}
+	}()
 	s.forwarded.Add(1)
 	s.logger.Printf("forwarded to %s", addr)
 
@@ -366,8 +452,20 @@ func (s *Server) handleDirectTCPIP(newChannel ssh.NewChannel) {
 		defer ch.Close()
 		defer conn.Close()
 		done := make(chan struct{}, 2)
-		go func() { _, _ = io.Copy(conn, ch); done <- struct{}{} }()
-		go func() { _, _ = io.Copy(ch, conn); done <- struct{}{} }()
+		// Relaying to the far end counts as activity, because that is what the
+		// bastion is watching: the target's SSH handshake runs inside this
+		// channel — odd-shaped but legitimate — and its keepalives too.
+		go func() { _, _ = io.Copy(conn, s.tee(ch)); done <- struct{}{} }()
+		go func() {
+			_, _ = io.Copy(ch, readerFunc(func(p []byte) (int, error) {
+				n, err := conn.Read(p)
+				if n > 0 {
+					s.alive()
+				}
+				return n, err
+			}))
+			done <- struct{}{}
+		}()
 		<-done
 	}()
 }
@@ -388,7 +486,7 @@ func (s *Server) acceptLoop() {
 }
 
 func (s *Server) handleConn(transport net.Conn) {
-	sshConn, chans, _, err := ssh.NewServerConn(transport, s.cfg)
+	sshConn, chans, reqs, err := ssh.NewServerConn(transport, s.cfg)
 	if err != nil {
 		s.authFail.Add(1)
 		s.logger.Printf("handshake failed: %v", err)
@@ -400,6 +498,17 @@ func (s *Server) handleConn(transport net.Conn) {
 	defer func() {
 		_ = sshConn.Close()
 		s.untrack(sshConn)
+	}()
+	// The global-request stream is where a client's keepalives arrive. It is
+	// drained here (and counted as activity) rather than by ssh.DiscardRequests,
+	// so that the silence watchdog sees exactly the traffic a bastion sees.
+	go func() {
+		for req := range reqs {
+			s.alive()
+			if req.WantReply {
+				_ = req.Reply(false, nil)
+			}
+		}
 	}()
 	s.logger.Printf("session opened: user=%s client=%q", sshConn.User(), string(sshConn.ClientVersion()))
 
@@ -424,12 +533,6 @@ func (s *Server) handleConn(transport net.Conn) {
 	}
 }
 
-func (s *Server) track(c ssh.Conn) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.conns = append(s.conns, c)
-}
-
 func (s *Server) untrack(c ssh.Conn) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -439,6 +542,13 @@ func (s *Server) untrack(c ssh.Conn) {
 			return
 		}
 	}
+}
+
+func (s *Server) track(c ssh.Conn) {
+	s.alive()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.conns = append(s.conns, c)
 }
 
 type ptyRequest struct {

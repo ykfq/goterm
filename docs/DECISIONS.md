@@ -356,25 +356,48 @@ What sharing means in practice:
 
 ### Keepalives: staying connected while you think
 
-Every session sends an SSH keepalive every **45 s**: a global
+Every session sends an SSH keepalive every **15 s**: a global
 `keepalive@openssh.com` request with want-reply, the same mechanism OpenSSH's
-`ServerAliveInterval` uses.
+`ServerAliveInterval` uses. (It was 45 s until 2026-11-12. A bastion's silence
+budget is counted in minutes, and the first cadence that fits inside the
+shortest policy with room for jitter is about fifteen seconds; the cost is one
+four-byte request per quarter minute. The reply deadline is now its own number
+— 5 s — so a slow server is not misjudged because cadence and deadline shared
+one constant.)
 
 **A keepalive is not a way to keep a login open for ever.** The SSH keepalive is
 there so a session does not die of someone else's idle timer; the anti-idle is
 there because `TMOUT` counts input, not traffic. Neither is meant to outlast the
-organisation that set those timers, so probing stops once the user has been quiet
-for the idle window: **24 hours by default, 1–744 configurable** (Settings →
-Idle keepalive). Go says so once in the notice stack — `idle for 24 hours —
-keepalive signals stopped, so the server may now drop this session` — and leaves
-the connection itself alone; the server's own idle policy decides whether it
-actually goes away.
+organisation that set those timers, so probing stops once the user is *gone*:
+nothing typed for the idle window **and** the window out of sight (hidden,
+minimised, or behind another app — `Manager.SetDetached`). The window is
+**24 hours by default, 1–744 configurable** (Settings → Idle keepalive). Go
+says so once in the notice stack — `away for 24 hours — keepalive signals
+stopped, so the server may now drop this session` — and leaves the connection
+itself alone; the server's own idle policy decides whether it actually goes
+away.
+
+Why "quiet" alone stopped being the trigger (2026-11-12, a JumpServer
+regression): the bastion watches the **connection**, not the keyboard, and
+hangs up a session that has sent nothing for its window — with probes stopped
+once the keyboard passed the idle window *by our own setting* (1 h is the
+configurable floor, and an hour of watching output or running a long `sz` is
+ordinary), the drop arrived at the bastion's hour — exactly while the user
+was there. Stopping on a quiet keyboard did not let the server's idle policy decide;
+it guaranteed the drop. A quiet-but-visible window is therefore still defended;
+only an out-of-sight one gives up the lease after the window, so a login left
+behind on Friday still dies over the weekend (plan.md red line 8 intact — the
+defence still ends, just on evidence that the human actually left).
+`internal/sshx/jumpserver_test.go` pins all of it against a server that hangs
+up on silence, including the control: keepalive off ⇒ the session dies.
 
 Three properties make it a window rather than a trap:
 - The clock belongs to the **connection**, not to the tab, and only typed input
   resets it. A duplicate shares the clock — typing in either tab keeps the whole
   link alive — while remote output, resizes and the probes themselves do not
-  count.
+  count. Going out of sight starts the clock immediately: a tab obscured at
+  09:00 must not be defended until 09:00 tomorrow just because it was typed
+  into at 08:59.
 - The window is measured from the **last keystroke**, so a session that is being
   used is never cut off by it: there is no cap on how long an active session may
   live. Lowering the setting reaches connections that are already open, and a
