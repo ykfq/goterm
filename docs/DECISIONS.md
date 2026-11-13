@@ -368,16 +368,33 @@ follows:
 | Line at the prompt | Keystroke | Why it is safe |
 | --- | --- | --- |
 | empty | `\r` | Enter on an empty line prints a fresh prompt; nothing runs. It is the only thing a shell that counts *completed lines* notices. |
-| has unsubmitted text | a space, and nothing else | A space cannot submit a line. It is still input, so `TMOUT` and activity detectors count it. |
-| cursor moved, nothing typed | one right arrow | The shell's own line editor keeps the line; the key changes nothing. |
-| cannot tell (half a sequence) | nothing | Guessing here is how the red line was broken in the first place. |
+| anything else on it | a space, and nothing else | A space cannot submit a line. It is still input, so `TMOUT` and activity detectors count it. "Anything else" is text the user has not submitted, a line recalled from history with an arrow key, or an escape sequence still half-typed. |
 
-It ships **on**, with a switch to turn it off, an interval (default **2 min**)
-and a "fall back to a space" option for someone who cannot tolerate an Enter at
-all. The gates that remain: 5 s of quiet output first, never while a transfer
-owns the stream (红线 4), never counted as the user's own activity (红线 8 — the
-idle window still ends the defence), and a keystroke that cannot be sent
-postpones rather than spins.
+That table is now the whole rule, and the user asked for it in exactly those
+words after two rounds of gates that each had a way to silence it: **every
+minute, one Enter on an empty line, one space when the line is not empty.**
+`nudgeOnce` has two ways out and both are red lines — a transfer owns the stream
+(红线 4), or the user is gone past the idle window (红线 8).
+
+Two gates were removed because each was a way for a live session to die:
+
+- **The quiet-output requirement.** A booking that followed the output clock
+  meant a program that keeps printing (a monitor, `tail -f`, a prompt with a
+  clock in it) postponed the keystroke for ever — and output does not reset a
+  `TMOUT` or a bastion's input timer, so the session was logged out at its
+  busiest. The window now counts from the last keystroke (or from connect), and
+  nothing else moves it. Pinned by `TestContinuousOutputDoesNotPostponeTheKeystroke`.
+- **The "cannot tell what is on the line, so say nothing" branch.** A single ESC
+  keypress left the tracker pending, and pending meant silence — for good, and
+  even after readline itself had given up on the escape 0.5 s later. The line
+  cannot be known to be empty then, so the answer is a space: never an Enter.
+  Pinned by `TestNudgeSurvivesALoneEscape`.
+
+It ships **on**, with a switch to turn it off, an interval (default **1 min**)
+and a "fall back to a space" option. One minute is half the shortest input
+timeout anyone configures, so a missed tick still leaves another in time; the
+TMOUT notice now names the interval it is losing against, because "logged out
+again" with no numbers in it is what made this take three rounds.
 
 **Shipping it off was the bug that came back twice.** Sessions were still being
 logged out after the keystroke had been built, wired and tested, for the dullest
@@ -387,29 +404,29 @@ tell it from a choice. Three things changed, and each is pinned:
 
 - The default is **on**. The failure it defends against is silent — a session
   just goes away — and the layers below it cost nothing when the line is busy.
-- A file without a `version` was written before schema 2, so its `false` is the
-  old default, not a decision: `settings.Load` turns the keystroke on once,
-  stamps `"version": 2` and rewrites the file, after which the switch is the
-  user's again. Pinned by `TestALegacyFileGetsTheIdleKeystrokeOnceAndSaysSo`
-  and, from the app's side, by
+- Every file older than schema 3 was written by a build whose keystroke either
+  never ran or ran too late, so neither its switch nor its window counts as a
+  decision: `settings.Load` turns the keystroke on, sets the window to one
+  minute, stamps `"version": 3` and rewrites the file — after which the switch
+  is the user's again. Pinned by `TestALegacyFileGetsTheIdleKeystrokeOnceAndSaysSo`,
+  `TestAFileFromTheBrokenBuildGetsOneMinuteAndOn` and, from the app's side, by
   `TestASettingsFileFromTheOldBuildStillKeepsSessionsAlive`.
-- The status bar now shows `idle key 120s · N sent · next 47s`. "The switch is
+- The status bar now shows `idle key 60s · N sent · next 47s`. "The switch is
   on" and "a byte actually left" are different claims, and only the second one
   keeps a session alive; a count that climbs while the tab sits there is the
   difference made visible.
 
 **The window is a deadline, not a delay.** Two arithmetic mistakes were hidden
 under the old 100 ms polling loop, and both cost a keystroke: `jitter` was
-*added* to the booking, so a two-minute setting fired at up to 2 min 12 s — a
-`TMOUT` of exactly two minutes won the race; and after every keystroke the next
+*added* to the booking, so a booking fired at up to 10 % past the window, and a
+`TMOUT` of exactly the window won the race; and after every keystroke the next
 booking was made from "now" at the moment the loop woke, so one late wake pushed
 the cadence out by another whole window (a keystroke every window became one
-every two). The booking is now `max(last output, last keystroke) + window`, with
-the jitter subtracted rather than added: a keystroke a few seconds early is
-free, one a few seconds late is a lost session. `pause` is one timer instead of
-a poll, so an idle session no longer wakes ten times a second to read a counter.
-Pinned by `TestNudgeNeverLandsLaterThanTheWindow` (the old code delivers three
-keystrokes in ten seconds where four are due) and by the bastion test below,
+every two). The booking is now the last keystroke plus the window, with the
+jitter subtracted rather than added: a keystroke a few seconds early is free,
+one a few seconds late is a lost session. `pause` is one timer instead of a
+poll, so an idle session no longer wakes ten times a second to read a counter.
+Pinned by `TestNudgeNeverLandsLaterThanTheWindow` and by the bastion test below,
 which hangs up a session two seconds after its last input.
 
 Two corrections came out of building it: the fake bastion in `internal/sshtest`

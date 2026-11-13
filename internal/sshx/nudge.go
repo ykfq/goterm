@@ -14,51 +14,35 @@ import (
 // however healthy the transport is. The only thing those notice is a byte on
 // the shell's input.
 //
-// So there is a second layer, and it is off unless the user asks for it: after
-// a window with no output, GoTerm types one harmless keystroke into the
-// session.
+// So there is a second layer, and it is on: every window (one minute by
+// default) GoTerm types one keystroke into the session. It is deliberately as
+// dumb as it can be, because every clever gate added in front of it has been a
+// way for the session to die quietly:
 //
-// The keystroke depends on what is standing at the prompt, because the two
-// cases have opposite safe answers:
+//   - Line empty: a carriage return. It is what a user's Enter does on an
+//     empty line — the shell answers with a fresh prompt and nothing runs.
+//   - Anything else on the line: a space, with no Enter anywhere near it. A
+//     space cannot submit a line, and it is still typed input, which is what
+//     `TMOUT` and an activity-watching bastion count.
 //
-//   - Line empty: a carriage return is safe. It is what a user's Enter does on
-//     an empty line — the shell answers with a fresh prompt and nothing runs.
-//   - Line has text the user has not submitted: an Enter would run it. That is
-//     the accident this whole layer has to avoid, so the nudge is a space with
-//     no Enter anywhere near it. The half-typed line gains a space and safely
-//     says nothing.
+// "Anything else" deliberately swallows the cases the old code used to refuse:
+// a half-typed command (a space is safe), a line recalled from history with an
+// arrow key (a space is safe), and an escape sequence still being typed (a
+// space is safe; an Enter there is not). Refusing was how a `>` prompt with
+// half a loop on it, or a lone ESC, could silence the layer for good — and a
+// silent layer is a session that dies anyway.
 //
-// Refusing to nudge while someone is halfway through a command was the old
-// behaviour, and it is what left those sessions to die: a `>` prompt with half
-// a loop on it, or a command someone walked away from, could never be kept
-// alive. A space can.
-//
-// The one thing the space cannot do is turn a carriage return into something
-// else, so "does the line have text" has to be answered from the input stream
-// rather than guessed. Session tracks it (see typedLine) from the bytes the
-// user actually typed — the transfer filter writes protocol through the same
-// path, which is why transfer traffic is tracked apart.
+// Only two things stop it, and both are red lines: a transfer owns the stream
+// (红线 4), and the user has been gone past the idle window (红线 8).
 const (
-	// DefaultNudgeEvery is the window between nudges, measured from the last
-	// output to reach the terminal. Two minutes is inside the five-minute
-	// timers most shells and bastions use, with room for a missed tick.
-	DefaultNudgeEvery = 2 * time.Minute
+	// DefaultNudgeEvery is the window between keystrokes: one minute, the
+	// cadence the user asked for. Half the shortest `TMOUT` anyone sets (two
+	// minutes), so a missed tick or a slow tick still leaves one in time.
+	DefaultNudgeEvery = time.Minute
 	// MinNudgeEvery and MaxNudgeEvery bound the setting.
 	MinNudgeEvery = 15 * time.Second
 	MaxNudgeEvery = 30 * time.Minute
-	// nudgeQuiet needs this much silence first: a keystroke must never land in
-	// the middle of a program printing.
-	nudgeQuiet = 5 * time.Second
 )
-
-// nudgeQuietWait is nudgeQuiet as the loop uses it: the production value,
-// shortened only when a test brought its own floor.
-func nudgeQuietWait() time.Duration {
-	if nudgeFloor > 0 && nudgeFloor < nudgeQuiet {
-		return 4 * nudgeFloor
-	}
-	return nudgeQuiet
-}
 
 // nudgePause is how long a keystroke that cannot be sent safely is postponed
 // by — and how long the loop waits after output stalled it, instead of looking
@@ -151,7 +135,6 @@ func (s *Session) revive() {
 // what the first keystroke is measured from, so a session that has been open
 // and quiet arrives here already due rather than starting a fresh window.
 func (s *Session) nudgeLoop(stop <-chan struct{}, gate func() bool) {
-	var lastSeen int64 = -1
 	for {
 		opts := s.nudgeOptions()
 		if !opts.On {
@@ -160,77 +143,47 @@ func (s *Session) nudgeLoop(stop <-chan struct{}, gate func() bool) {
 				return
 			case <-time.After(5 * time.Second):
 			}
-			lastSeen = -1
+			// A fresh window when the switch goes back on.
+			s.nudgeDue.Store(0)
 			continue
 		}
-		// Two windows, in this order: nudgeQuiet of silence, then the
-		// configured interval. Both are absolute times, so every pass through
-		// the loop — including one cut short by output starting again — waits
-		// for exactly what is left rather than for the window from the top.
 		now := time.Now()
-		seen := s.lastOutput.Load()
-		if seen == 0 {
-			// Nothing has arrived yet: the window starts when the session did.
-			seen = s.connectedAt.Load()
-		}
-		if lastSeen == -1 || seen != lastSeen {
-			lastSeen = seen
-			// The window is measured from whichever came last: output reaching
-			// the terminal, or our own last keystroke — a shell that answered
-			// nothing still gets one at every window.
-			base := time.Unix(0, seen)
-			if at := time.Unix(0, s.nudgeSentAt.Load()); at.After(base) {
-				base = at
+		due := s.nudgeDue.Load()
+		if due == 0 {
+			// No booking yet: count from the last keystroke, or from the moment
+			// the session opened. Output deliberately does not figure here — a
+			// program that keeps printing does not reset a TMOUT, so letting
+			// output postpone the keystroke is one more way for a session that
+			// is busy but typed-at to be logged out.
+			from := s.connectedAt.Load()
+			if at := s.nudgeSentAt.Load(); at != 0 {
+				from = at
 			}
-			quietAt := base.Add(nudgeQuietWait())
-			// The booking is never later than the window. A TMOUT of exactly
-			// two minutes has no room for a jitter on top of a two-minute
-			// setting, and a keystroke a few seconds early costs nothing.
-			due := base.Add(opts.interval() - jitter(opts.interval()))
-			if due.Before(quietAt) {
-				due = quietAt
-			}
-			s.nudgeQuietAt.Store(quietAt.UnixNano())
-			s.nudgeDue.Store(due.UnixNano())
-		}
-		quietAt := time.Unix(0, s.nudgeQuietAt.Load())
-		due := time.Unix(0, s.nudgeDue.Load())
-		if now.Before(quietAt) || now.Before(due) {
-			until := quietAt
-			if due.After(until) {
-				until = due
-			}
-			if s.pause(until.Sub(now)) {
-				lastSeen = -1 // woken: book again from the current clock
-			}
+			s.nudgeDue.Store(book(time.Unix(0, from), opts.interval()).UnixNano())
 			continue
 		}
-		// The quiet window has passed and the interval with it. Output that
-		// arrived in the meantime moved the clock and the next pass rebooks.
-		if !s.nudgeOptions().On {
+		if at := time.Unix(0, due); now.Before(at) {
+			if s.pause(time.Until(at)) {
+				s.nudgeDue.Store(0) // woken on purpose: book again
+			}
 			continue
 		}
 		if gate != nil && !gate() {
+			// The user is gone past the idle window (红线 8): stop defending
+			// the login, and look again later in case they come back.
 			s.pause(nudgePause)
-			lastSeen = seen
+			s.nudgeDue.Store(0)
 			continue
 		}
-		// A successful keystroke is booked from the moment it went out, not
-		// from when the loop next passes: rebasing on "now" after a long sleep
-		// is how a keystroke every window became one every two windows.
-		if !s.nudgeOnce() {
-			// Nothing can be sent right now. The loop comes back later with
-			// this booking still in hand; rebuilding it from an activity clock
-			// that has not moved would land in the past and spin.
-			if s.pause(nudgePause) {
-				lastSeen = -1
-				continue
-			}
-			lastSeen = seen
-			continue
-		}
-		lastSeen = -1
+		s.nudgeOnce()
+		s.nudgeDue.Store(book(time.Now(), opts.interval()).UnixNano())
 	}
+}
+
+// book is the next keystroke: one window from `from`, with the jitter taken off
+// rather than added, so a booking is never later than the window.
+func book(from time.Time, every time.Duration) time.Time {
+	return from.Add(every - jitter(every))
 }
 
 // jitter spreads the bookings of many sessions by up to a tenth of the window,
@@ -246,52 +199,29 @@ func jitter(interval time.Duration) time.Duration {
 	return rand.N(span)
 }
 
-// nudgeOnce decides what is safe and sends it. It reports whether a keystroke
-// went out, so the loop can postpone the next one instead of spinning on a
-// state that will not change on its own.
+// nudgeOnce types one keystroke into the prompt and reports whether it went
+// out. The rule is the user's, in the plainest form:
+//
+//	line empty   -> Enter   (a fresh prompt, nothing runs)
+//	something on it -> a space (cannot submit a line)
+//
+// "Something" is any state the session is not sure is empty — text, a cursor
+// moved through recalled history, or an escape sequence still half-typed. The
+// safe answer for all of them is the same, so there is nothing left to get
+// wrong.
 func (s *Session) nudgeOnce() bool {
 	if s.closed() {
 		return false
 	}
 	if s.transferring.Load() {
-		// A transfer owns the stream; the space would land inside its data.
+		// A transfer owns the stream; either keystroke would land inside its
+		// data (红线 4).
 		return false
 	}
-	if s.lastOutput.Load() == 0 {
-		// The session has printed nothing at all, so an empty line is the only
-		// reading of the prompt that is possible — and the only keystroke it
-		// allows is the one that runs nothing. Without this, a shell that says
-		// nothing for minutes (a quiet login, a `TMOUT` about to fire) would
-		// never be nudged at all.
+	if state, _ := s.typedLine(); state == "empty" {
 		_ = s.writeNudge([]byte("\r"))
-		return true
-	}
-	state, empty := s.typedLine()
-	if !empty && state == "pending" {
-		// Half a sequence is on the wire; whatever arrives next completes it,
-		// and guessing at the line before then is how a command gets run.
-		return false
-	}
-	_ = empty
-	switch state {
-	case "empty":
-		// The shell's line is empty: Enter prints a fresh prompt and runs
-		// nothing, which is the most a shell that only counts completed lines
-		// will notice.
-		_ = s.writeNudge([]byte("\r"))
-	case "moved":
-		// The user moved the cursor without typing: the line is still what the
-		// shell has, and its own editor keeps that. One right arrow is a
-		// keystroke that changes nothing.
-		_ = s.writeNudge([]byte("\x1b[C"))
-	case "text":
-		// Text is on the line: a space is the one keystroke that cannot submit
-		// it, and it resets every activity timer that counts typed input.
+	} else {
 		_ = s.writeNudge([]byte(" "))
-	default:
-		// The state cannot be decided — an escape sequence the user started is
-		// still unfinished. Say nothing rather than guess at an Enter.
-		return false
 	}
 	return true
 }

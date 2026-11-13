@@ -114,13 +114,10 @@ type Session struct {
 	// typed is the state of the line at the prompt, from what the user typed.
 	typedMu sync.Mutex
 	typed   typedState
-	// lastOutput is when output last reached the terminal. The nudge waits for
-	// quiet from this clock, so a program printing is never interrupted.
-	lastOutput atomic.Int64
-	// nudgeDue is when the next keystroke is booked for, and connectedAt is
-	// when the session opened — the fallback clock before any output arrives.
-	nudgeDue     atomic.Int64
-	nudgeQuietAt atomic.Int64
+	// nudgeDue is when the next keystroke is booked for (0 = book one), and
+	// connectedAt is when the session opened — the clock the first window
+	// counts from.
+	nudgeDue atomic.Int64
 	// nudgeWake interrupts a booking when waiting is pointless (a transfer
 	// ended): the loop stops sleeping and books again from the current clock.
 	// A channel, not a polled counter: a session may be asleep for two minutes
@@ -299,9 +296,6 @@ func (s *Session) readers(wg *sync.WaitGroup, r io.Reader) {
 			n, err := r.Read(buf)
 			if n > 0 {
 				s.bytesIn.Add(int64(n))
-				// Output reaching the session is what the nudge waits to see
-				// stop; the terminal's own clock would count progress bars.
-				s.lastOutput.Store(time.Now().UnixNano())
 				s.noteShellTimeout(buf[:n])
 				chunk := make([]byte, n)
 				copy(chunk, buf[:n])
@@ -331,9 +325,9 @@ func (s *Session) noteShellTimeout(chunk []byte) {
 	}
 	s.mgr.noticeAction(s.id, "warn", fmt.Sprintf(
 		"%s: the remote shell logged itself out after an input timeout (bash TMOUT). "+
-			"SSH keepalives cannot reset that timer: a keepalive never reaches the shell, only typed input does. "+
-			"Turn on idle keepalive keystrokes in Settings to send one harmless keystroke while you are idle.",
-		s.info.Target), "open-idle-settings")
+			"Only typed input resets that timer; SSH keepalives never reach the shell. GoTerm's idle keepalive keystrokes go out every %s — "+
+			"this shell's timer is shorter than that, so lower the window in Settings.",
+		s.info.Target, s.nudgeOptions().interval()), "open-idle-settings")
 }
 
 // pump owns the output buffer — one goroutine, so events cannot be

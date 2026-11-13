@@ -195,3 +195,29 @@ func TestAFileFromTheFutureIsNotDowngraded(t *testing.T) {
 		t.Fatalf("version rewritten to %d", got.Version)
 	}
 }
+
+// A file from the build that wrote schema 2 carries the two-minute window and,
+// if the user had switched the keystroke off while it was failing, "off". Both
+// are artefacts of a feature that did not work, so schema 3 takes them back:
+// one minute, and on.
+func TestAFileFromTheBrokenBuildGetsOneMinuteAndOn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	stale := `{"version":2,"theme":"dark","idleNudge":false,"idleNudgeSeconds":120}`
+	if err := os.WriteFile(path, []byte(stale), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := Load(path)
+	if !got.IdleNudge {
+		t.Fatal("the keystroke stayed off on a file from the build where it did not work")
+	}
+	if got.IdleNudgeSeconds != DefaultNudgeSeconds {
+		t.Fatalf("window came back as %ds, want %ds", got.IdleNudgeSeconds, DefaultNudgeSeconds)
+	}
+	if got.Version != SchemaVersion {
+		t.Fatalf("file says version %d, want %d", got.Version, SchemaVersion)
+	}
+	// Everything else in the file is still the user's.
+	if got.Theme != "dark" {
+		t.Fatalf("migration changed the theme to %q", got.Theme)
+	}
+}

@@ -188,7 +188,7 @@ func (a *App) settingsBehaviour(c *ui.Context) {
 					a.applySettings()
 				}
 			})
-			ui.Text(c, "After a quiet window GoTerm sends one harmless key so a shell's own timeout (bash TMOUT) and a bastion's activity timer do not log the session out. On an empty line it is Enter; while a command is half-typed it is a space, which cannot submit anything. Never during a transfer.").
+			ui.Text(c, "Every window GoTerm types one harmless key so a shell's own timeout (bash TMOUT) and a bastion's activity timer do not log the session out. On an empty line it is Enter; with anything on the line it is a space, which cannot submit anything. Never during a transfer.").
 				FontSize(11).TextColor(c.Theme().TextMuted)
 			if a.prefs.IdleNudge {
 				ui.Field(c, "Quiet window before that keystroke", func() {
@@ -199,7 +199,7 @@ func (a *App) settingsBehaviour(c *ui.Context) {
 						a.applySettings()
 					}
 				})
-				ui.Text(c, fmt.Sprintf("Seconds. The default is %d (two minutes).", settings.DefaultNudgeSeconds)).
+				ui.Text(c, fmt.Sprintf("Seconds between keystrokes. The default is %d (one minute).", settings.DefaultNudgeSeconds)).
 					FontSize(11).TextColor(c.Theme().TextMuted)
 				ui.Field(c, "Use a space when Enter would be unsafe", func() {
 					if ui.Checkbox(c, &a.prefs.IdleNudgeSubmit, "On an empty line, fall back to a space if Enter cannot be sent").

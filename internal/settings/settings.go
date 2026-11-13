@@ -29,9 +29,10 @@ const (
 	// past which a bastion's timer would have fired first anyway.
 	MinNudgeSeconds = 15
 	MaxNudgeSeconds = 1800
-	// DefaultNudgeSeconds is two minutes: inside the five-minute timers most
-	// shells and bastions use, with room for a missed tick.
-	DefaultNudgeSeconds = 120
+	// DefaultNudgeSeconds is one minute: half the shortest input timeout anyone
+	// configures (two minutes), so one missed tick still leaves another in
+	// time. It is the cadence the user asked for.
+	DefaultNudgeSeconds = 60
 	// The custom highlight keywords are the user's, but they still need a
 	// limit: every word is matched against every line of output, and a file
 	// full of one-letter words would slow the terminal without colouring
@@ -48,7 +49,11 @@ const (
 // chosen by anyone. Reading that as a choice is how the feature the user asked
 // for ran on no machine. A file without a version was written by a build whose
 // false meant nothing, and gets the new default once.
-const SchemaVersion = 2
+//
+// Schema 3 is the window dropping to one minute. Files at 2 were written by the
+// builds whose keystroke was too slow or never fired, so their 120 s is the old
+// default too, not a preference.
+const SchemaVersion = 3
 
 // Settings is the whole preference file. Zero values are repaired by Clamp, so
 // an older or hand-edited file cannot produce a terminal with no scrollback or
@@ -85,8 +90,8 @@ type Settings struct {
 	// is the only thing that triggers it, and a session that is being used is
 	// never touched.
 	IdleNudge bool `json:"idleNudge"`
-	// IdleNudgeSeconds is the quiet window between keystrokes. Zero means the
-	// default of two minutes.
+	// IdleNudgeSeconds is the window between keystrokes. Zero means the default
+	// of one minute.
 	IdleNudgeSeconds int `json:"idleNudgeSeconds,omitempty"`
 	// IdleNudgeSubmit lets the empty-line keystroke become a space when an
 	// Enter would be unsafe (for instance mid-transfer). Off by default: a
@@ -110,7 +115,7 @@ func Default() Settings {
 		CopyOnSelect:     true,
 		IdleTimeoutHours: 24,
 		SidebarWidth:     268,
-		IdleNudgeSeconds: 120,
+		IdleNudgeSeconds: DefaultNudgeSeconds,
 	}
 }
 
@@ -217,10 +222,13 @@ func Load(path string) Settings {
 		return Default()
 	}
 	if header.Version < SchemaVersion {
-		// An older file. Its "idleNudge": false is the old default, not a
-		// decision, so the new default takes it — and the file is rewritten at
-		// once, so the next start reads a choice rather than an absence.
+		// An older file, and every version before this one was written by a
+		// build whose keystroke did not actually keep a session alive: off, or
+		// two minutes late, or silent. So neither the switch nor the window in
+		// it is a decision to honour — both take the current default, once, and
+		// the file is rewritten so the next start reads a choice.
 		s.IdleNudge = true
+		s.IdleNudgeSeconds = DefaultNudgeSeconds
 		s.Clamp()
 		_ = s.Save(path)
 		return s

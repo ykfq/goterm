@@ -18,6 +18,7 @@ package sshx
  */
 import (
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"testing"
@@ -46,14 +47,15 @@ func nudgeHarness(t *testing.T) (*harness, *Session) {
 	return h, sess
 }
 
-// bookFromNow restarts the keystroke window at this instant on both clocks the
-// loop reads, so a test never inherits a booking made during connect.
+// bookFromNow restarts the keystroke window at this instant: the clocks the
+// loop books from, and the booking itself, so a test never inherits one made
+// during connect.
 func bookFromNow(sess *Session) {
 	now := time.Now().UnixNano()
-	sess.lastOutput.Store(now)
 	sess.connectedAt.Store(now)
-	sess.nudgeQuietAt.Store(0)
+	sess.nudgeSentAt.Store(0)
 	sess.nudgeDue.Store(0)
+	sess.revive() // the loop may be asleep on the booking being replaced
 }
 
 // typeBytes are what the test sends as "the user typing".
@@ -95,7 +97,7 @@ func TestNudgeEntersOnAnEmptyLine(t *testing.T) {
 	trace := traceNudges(t)
 	_, sess := nudgeHarness(t)
 
-	if !waitFor(t, nudgeQuiet+3*nudgeAfter, func() bool { return len(*trace) > 0 }) {
+	if !waitFor(t, 4*nudgeAfter, func() bool { return len(*trace) > 0 }) {
 		t.Fatalf("no keystroke arrived; the session has booked %v",
 			time.Until(time.Unix(0, sess.nudgeDue.Load())).Round(time.Millisecond))
 	}
@@ -109,7 +111,7 @@ func TestNudgeSpaceWhenACommandIsHalfTyped(t *testing.T) {
 	h, sess := nudgeHarness(t)
 	typeBytes(t, h, sess, "echo NEVER-RUNS")
 
-	if !waitFor(t, nudgeQuiet+3*nudgeAfter, func() bool { return len(*trace) > 0 }) {
+	if !waitFor(t, 4*nudgeAfter, func() bool { return len(*trace) > 0 }) {
 		t.Fatal("no keystroke arrived on a session sitting on a half-typed command")
 	}
 	if got := (*trace)[0]; got != "\" \"" {
@@ -134,7 +136,7 @@ func TestNudgeLeavesTheSubmittedCommandLineAlone(t *testing.T) {
 
 	typeBytes(t, h, sess, "sleep 0.3; echo printed\r")
 	h.expectOutput(sess, "printed")
-	time.Sleep(nudgeQuietWait() + 2*nudgeAfter)
+	time.Sleep(3 * nudgeAfter)
 
 	out := printable(h.rec.output(sess.ID()))
 	// The command's own line is the one the user typed, verbatim: a keystroke
@@ -148,14 +150,14 @@ func TestNudgeStandsDownDuringATransfer(t *testing.T) {
 	trace := traceNudges(t)
 	_, sess := nudgeHarness(t)
 	sess.SetTransferring(true)
-	time.Sleep(2 * nudgeQuietWait())
+	time.Sleep(3 * nudgeAfter)
 	if len(*trace) != 0 {
 		t.Fatalf("the keystroke reached the shell mid-transfer: %v", *trace)
 	}
 
 	sess.SetTransferring(false)
 	bookFromNow(sess)
-	if !waitFor(t, 3*nudgeQuietWait(), func() bool { return len(*trace) > 0 }) {
+	if !waitFor(t, 4*nudgeAfter, func() bool { return len(*trace) > 0 }) {
 		t.Fatal("the keystroke did not resume after the transfer")
 	}
 }
@@ -303,9 +305,8 @@ func TestNudgeReachesACompletelyQuietShell(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	if sess.lastOutput.Load() != 0 {
-		t.Fatalf("this shell was supposed to print nothing, but the output clock is %d",
-			sess.lastOutput.Load())
+	if n := sess.Info().BytesIn; n != 0 {
+		t.Fatalf("this shell was supposed to print nothing, but %d bytes came back", n)
 	}
 
 	keystroke := func() bool {
@@ -313,7 +314,7 @@ func TestNudgeReachesACompletelyQuietShell(t *testing.T) {
 		defer mu.Unlock()
 		return len(received) > 0
 	}
-	if !waitFor(t, 3*nudgeQuietWait(), keystroke) {
+	if !waitFor(t, 4*nudgeAfter, keystroke) {
 		t.Fatal("a shell that printed nothing was never nudged; TMOUT would have killed it")
 	}
 	// One keystroke per window, not a flood: a shell that answers nothing gives
@@ -387,10 +388,61 @@ func TestNudgeStateCountsWhatLeft(t *testing.T) {
 	if on, sent, _ := sess.NudgeState(); !on || sent != 0 {
 		t.Fatalf("fresh session: on=%v sent=%d, want on with nothing sent", on, sent)
 	}
-	if !waitFor(t, nudgeQuiet+3*nudgeAfter, func() bool { _, sent, _ := sess.NudgeState(); return sent > 0 }) {
+	if !waitFor(t, 4*nudgeAfter, func() bool { _, sent, _ := sess.NudgeState(); return sent > 0 }) {
 		t.Fatal("the status bar would still show nothing sent")
 	}
 	if on, sent, dueIn := sess.NudgeState(); !on || sent < 1 || dueIn <= 0 {
 		t.Fatalf("after a keystroke: on=%v sent=%d next=%v, want an armed session with a booking", on, sent, dueIn)
+	}
+}
+
+// A lone ESC is what makes a terminal's line state unknowable — the old code
+// treated that as "never nudge again", which is a session that dies with the
+// feature apparently on. The line cannot be known to be empty, so the answer is
+// a space: never an Enter.
+func TestNudgeSurvivesALoneEscape(t *testing.T) {
+	trace := traceNudges(t)
+	h, sess := nudgeHarness(t)
+	typeBytes(t, h, sess, "\x1b")
+	bookFromNow(sess)
+
+	if !waitFor(t, 4*nudgeAfter, func() bool { return len(*trace) > 0 }) {
+		t.Fatalf("a session holding a lone ESC was never nudged again")
+	}
+	if got := (*trace)[0]; got != "\" \"" {
+		t.Fatalf("the keystroke was %s, want a space: an Enter there could submit something", got)
+	}
+}
+
+// Output must not postpone the keystroke. A program that keeps printing does
+// not reset a TMOUT — only input does — so a booking that followed the output
+// clock would starve the shell exactly when it is busiest.
+func TestContinuousOutputDoesNotPostponeTheKeystroke(t *testing.T) {
+	trace := traceNudges(t)
+	h := newHarness(t, sshtest.Options{
+		Shell: func(sh *sshtest.Shell) {
+			ticker := time.NewTicker(50 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-sh.Done():
+					return
+				case <-ticker.C:
+					if _, err := io.WriteString(sh.Out(), "still printing\r\n"); err != nil {
+						return
+					}
+				}
+			}
+		},
+	})
+	h.mgr.SetNudge(NudgeOptions{On: true, Every: nudgeAfter})
+	cfg := h.config()
+	cfg.KeepAliveSeconds = -1
+	sess := h.connect(cfg)
+	h.expectOutput(sess, "still printing")
+	bookFromNow(sess)
+
+	if !waitFor(t, 5*nudgeAfter, func() bool { return len(*trace) > 0 }) {
+		t.Fatal("a shell that prints constantly was never nudged; TMOUT would have killed it")
 	}
 }
