@@ -26,11 +26,13 @@ import (
 const (
 	// DefaultKeepAlive is how often an idle session is poked.
 	//
-	// Fifteen seconds, not forty-five: a bastion's idle policy is counted in
-	// minutes, and the first cadence that fits inside the shortest policy still
-	// leaves room for the policy's own jitter and for a probe or two being slow.
-	// The cost is one four-byte request and its reply per quarter minute.
-	DefaultKeepAlive = 15 * time.Second
+	// Two minutes, the cadence the user asked for: a connection-level timer (a
+	// bastion, a load balancer, an sshd `ClientAliveInterval` unset) fires in
+	// minutes, and two minutes stays ahead of the five-minute ones with room
+	// for a slow reply. The cost is one four-byte request and its reply per
+	// two minutes, which is also closer to what `ssh -o ServerAliveInterval`
+	// users run in practice.
+	DefaultKeepAlive = 2 * time.Minute
 	// keepAliveStrikes is how many unanswered probes in a row mean "the link is
 	// gone" rather than "the link is slow".
 	keepAliveStrikes = 3

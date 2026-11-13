@@ -33,7 +33,9 @@ func TestShellTimeoutIsExplainedOnce(t *testing.T) {
 	if !strings.Contains(notices, "TMOUT") {
 		t.Fatalf("no TMOUT explanation in the notices:\n%s", notices)
 	}
-	if !strings.Contains(notices, "Anti-idle") {
+	// It names the setting the user has to turn on, by the name the settings
+	// screen uses.
+	if !strings.Contains(notices, "idle keepalive keystrokes") {
 		t.Fatalf("the explanation does not say what would help:\n%s", notices)
 	}
 	if n := strings.Count(notices, "TMOUT"); n != 1 {
@@ -46,8 +48,8 @@ func TestShellTimeoutIsExplainedOnce(t *testing.T) {
 			action = notice.Action
 		}
 	}
-	if action != "enable-anti-idle" {
-		t.Fatalf("TMOUT notice action = %q, want enable-anti-idle", action)
+	if action != "open-idle-settings" {
+		t.Fatalf("TMOUT notice action = %q, want open-idle-settings", action)
 	}
 	// The bytes themselves still reached the terminal.
 	if !strings.Contains(string(h.rec.output(sess.ID())), "timed out waiting for input") {

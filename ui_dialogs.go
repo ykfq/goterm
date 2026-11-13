@@ -179,6 +179,37 @@ func (a *App) settingsBehaviour(c *ui.Context) {
 			})
 			ui.Text(c, "Only real input resets the timer; a keepalive never does.").
 				FontSize(11).TextColor(c.Theme().TextMuted)
+
+			// The idle keystroke. It is what resets a shell's own timer and a
+			// bastion's activity detector; the SSH keepalive above never
+			// reaches either.
+			ui.Field(c, "Type a keystroke into idle sessions", func() {
+				if ui.Switch(c, &a.prefs.IdleNudge).Changed() {
+					a.applySettings()
+				}
+			})
+			ui.Text(c, "After a quiet window GoTerm sends one harmless key so a shell's own timeout (bash TMOUT) and a bastion's activity timer do not log the session out. On an empty line it is Enter; while a command is half-typed it is a space, which cannot submit anything. Never during a transfer.").
+				FontSize(11).TextColor(c.Theme().TextMuted)
+			if a.prefs.IdleNudge {
+				ui.Field(c, "Quiet window before that keystroke", func() {
+					secs := float64(a.prefs.IdleNudgeSeconds)
+					ui.NumberInput(c, &secs, settings.MinNudgeSeconds, settings.MaxNudgeSeconds, 15)
+					if int(secs) != a.prefs.IdleNudgeSeconds {
+						a.prefs.IdleNudgeSeconds = int(secs)
+						a.applySettings()
+					}
+				})
+				ui.Text(c, fmt.Sprintf("Seconds. The default is %d (two minutes).", settings.DefaultNudgeSeconds)).
+					FontSize(11).TextColor(c.Theme().TextMuted)
+				ui.Field(c, "Use a space when Enter would be unsafe", func() {
+					if ui.Checkbox(c, &a.prefs.IdleNudgeSubmit, "On an empty line, fall back to a space if Enter cannot be sent").
+						Changed() {
+						a.applySettings()
+					}
+				})
+				ui.Text(c, "Leave this off if the shell only counts completed lines: then an empty line is always a real Enter, and a moment when it would be unsafe is skipped instead.").
+					FontSize(11).TextColor(c.Theme().TextMuted)
+			}
 		})
 	})
 }

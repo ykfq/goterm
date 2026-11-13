@@ -24,6 +24,14 @@ const (
 	MaxFontSize         = 32
 	MinIdleHours        = 1
 	MaxIdleHours        = 744
+	// Idle nudge bounds, in seconds. The floor is 15 s so a hand-edited file
+	// cannot turn the keystroke into a flood; the ceiling is half an hour,
+	// past which a bastion's timer would have fired first anyway.
+	MinNudgeSeconds = 15
+	MaxNudgeSeconds = 1800
+	// DefaultNudgeSeconds is two minutes: inside the five-minute timers most
+	// shells and bastions use, with room for a missed tick.
+	DefaultNudgeSeconds = 120
 	// The custom highlight keywords are the user's, but they still need a
 	// limit: every word is matched against every line of output, and a file
 	// full of one-letter words would slow the terminal without colouring
@@ -57,6 +65,19 @@ type Settings struct {
 	// included) matches as a substring, because those scripts have no spaces
 	// to bound a word with.
 	HighlightWords []string `json:"highlightWords,omitempty"`
+
+	// IdleNudge turns the idle keystroke on (see internal/sshx/nudge.go). It is
+	// off by default: the keystroke reaches the shell, which is exactly what a
+	// system with a TMOUT or an activity-watching bastion needs and exactly
+	// what nobody else should get unasked.
+	IdleNudge bool `json:"idleNudge"`
+	// IdleNudgeSeconds is the quiet window between keystrokes. Zero means the
+	// default of two minutes.
+	IdleNudgeSeconds int `json:"idleNudgeSeconds,omitempty"`
+	// IdleNudgeSubmit lets the empty-line keystroke become a space when an
+	// Enter would be unsafe (for instance mid-transfer). Off by default: a
+	// shell that only counts completed lines needs a real Enter.
+	IdleNudgeSubmit bool `json:"idleNudgeSubmit,omitempty"`
 }
 
 // Default is what a fresh install starts with: the 1.x defaults, translated to
@@ -73,6 +94,7 @@ func Default() Settings {
 		CopyOnSelect:     true,
 		IdleTimeoutHours: 24,
 		SidebarWidth:     268,
+		IdleNudgeSeconds: 120,
 	}
 }
 
@@ -89,6 +111,12 @@ func (s *Settings) Clamp() {
 	}
 	if s.IdleTimeoutHours < MinIdleHours || s.IdleTimeoutHours > MaxIdleHours {
 		s.IdleTimeoutHours = Default().IdleTimeoutHours
+	}
+	if s.IdleNudgeSeconds == 0 {
+		s.IdleNudgeSeconds = Default().IdleNudgeSeconds
+	}
+	if s.IdleNudgeSeconds < MinNudgeSeconds || s.IdleNudgeSeconds > MaxNudgeSeconds {
+		s.IdleNudgeSeconds = Default().IdleNudgeSeconds
 	}
 	if s.SidebarWidth < 180 || s.SidebarWidth > 520 {
 		s.SidebarWidth = Default().SidebarWidth

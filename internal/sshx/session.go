@@ -106,6 +106,27 @@ type Session struct {
 	out   *outQueue
 
 	finishOnce sync.Once
+
+	// nudge is the idle keystroke setting (see nudge.go), and nudgeMu guards
+	// it because the app changes it while the loop reads it.
+	nudgeMu sync.RWMutex
+	nudge   NudgeOptions
+	// typed is the state of the line at the prompt, from what the user typed.
+	typedMu sync.Mutex
+	typed   typedState
+	// lastOutput is when output last reached the terminal. The nudge waits for
+	// quiet from this clock, so a program printing is never interrupted.
+	lastOutput atomic.Int64
+	// nudgeDue is when the next keystroke is booked for, and connectedAt is
+	// when the session opened — the fallback clock before any output arrives.
+	nudgeDue     atomic.Int64
+	nudgeQuietAt atomic.Int64
+	// nudgeRevive is bumped when something makes waiting pointless (a transfer
+	// ending): the loop stops sleeping and books again from the current clock.
+	nudgeRevive atomic.Int64
+	connectedAt atomic.Int64
+	// transferring is set while a transfer owns the byte stream.
+	transferring atomic.Bool
 }
 
 // ID is the handle the frontend uses for every later call.
@@ -181,6 +202,7 @@ func (s *Session) Write(p []byte) error {
 		return fmt.Errorf("write to %s: %w", s.info.Target, err)
 	}
 	s.bytesOut.Add(int64(len(p)))
+	s.trackTyped(p)
 	if s.link != nil {
 		// Typed input is what the idle window is measured from. The clock lives
 		// on the connection, so a keystroke in any duplicated tab keeps the
@@ -188,6 +210,19 @@ func (s *Session) Write(p []byte) error {
 		s.link.touch()
 	}
 	return nil
+}
+
+// SetTransferring records that a transfer owns this session's byte stream.
+//
+// The transfer filter writes protocol through Write, the same path a keystroke
+// takes, and it must not leave the idle nudge thinking the user is typing a
+// command. While a transfer runs the nudge also stands down completely: a
+// keystroke inside ZMODEM or trzsz data corrupts it (plan.md red line 4).
+func (s *Session) SetTransferring(on bool) {
+	s.transferring.Store(on)
+	if !on {
+		s.revive()
+	}
 }
 
 // Resize tells the remote PTY the new geometry.
@@ -253,6 +288,9 @@ func (s *Session) readers(wg *sync.WaitGroup, r io.Reader) {
 			n, err := r.Read(buf)
 			if n > 0 {
 				s.bytesIn.Add(int64(n))
+				// Output reaching the session is what the nudge waits to see
+				// stop; the terminal's own clock would count progress bars.
+				s.lastOutput.Store(time.Now().UnixNano())
 				s.noteShellTimeout(buf[:n])
 				chunk := make([]byte, n)
 				copy(chunk, buf[:n])
@@ -283,8 +321,8 @@ func (s *Session) noteShellTimeout(chunk []byte) {
 	s.mgr.noticeAction(s.id, "warn", fmt.Sprintf(
 		"%s: the remote shell logged itself out after an input timeout (bash TMOUT). "+
 			"SSH keepalives cannot reset that timer: a keepalive never reaches the shell, only typed input does. "+
-			"Anti-idle sends a nudge while you are idle; the button turns it on.",
-		s.info.Target), "enable-anti-idle")
+			"Turn on idle keepalive keystrokes in Settings to send one harmless keystroke while you are idle.",
+		s.info.Target), "open-idle-settings")
 }
 
 // pump owns the output buffer — one goroutine, so events cannot be

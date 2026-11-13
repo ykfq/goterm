@@ -96,6 +96,10 @@ type Manager struct {
 	// connRef. Set through SetDetached, which also reaches open connections.
 	away atomic.Bool
 
+	// nudge is the idle keystroke setting, applied to every session — open now
+	// and opened later. Zero value is "off", which is the shipped default.
+	nudge atomic.Pointer[NudgeOptions]
+
 	// Session logging. logMu also guards the snapshot of the session map that
 	// ConfigureSessionLogging needs, because a change applies to the sessions
 	// that are already open as well as to the next one.
@@ -140,6 +144,8 @@ func NewManager(hostKeys *HostKeyStore) *Manager {
 		dialTimeout: 20 * time.Second,
 	}
 	m.idleTimeout.Store(int64(IdleTimeout(DefaultIdleTimeoutHours)))
+	off := NudgeOptions{Every: DefaultNudgeEvery}
+	m.nudge.Store(&off)
 	noop := EmitFunc(func(string, any) {})
 	m.emitter.Store(&noop)
 	return m
@@ -153,6 +159,22 @@ func NewManager(hostKeys *HostKeyStore) *Manager {
 // longer than the new window stops probing keepalives at its next tick. The
 // change is applied in place: an active session keeps its own clock, it is only
 // the threshold that moves.
+
+// SetNudge configures the idle keystroke (see nudge.go) for every session,
+// open and future. It is off unless the user turns it on.
+func (m *Manager) SetNudge(opts NudgeOptions) {
+	m.nudge.Store(&opts)
+	m.mu.RLock()
+	open := make([]*Session, 0, len(m.sessions))
+	for _, s := range m.sessions {
+		open = append(open, s)
+	}
+	m.mu.RUnlock()
+	for _, s := range open {
+		s.setNudge(opts)
+	}
+}
+
 func (m *Manager) SetIdleTimeout(d time.Duration) {
 	m.idleTimeout.Store(int64(d))
 
@@ -406,6 +428,7 @@ func (m *Manager) register(link *connRef, cfg Config, sh *shellPipes, fingerprin
 			KeepAliveSeconds: int(link.every / time.Second),
 		},
 	}
+	s.connectedAt.Store(started.UnixNano())
 	link.track(s)
 	m.remember(s)
 	m.openLogFor(s)
@@ -417,6 +440,13 @@ func (m *Manager) register(link *connRef, cfg Config, sh *shellPipes, fingerprin
 		wg.Wait()
 		close(s.chunks) // both readers are done; the pump flushes and exits
 	}()
+	// The nudge starts with the session, not with the terminal: a bastion can
+	// hang up before anyone attaches.
+	if opts := m.nudge.Load(); opts != nil {
+		s.setNudge(*opts)
+	}
+	go s.nudgeLoop(link.kaStop, link.probeAllowed)
+
 	go s.pump()
 	go s.wait()
 	link.startKeepAlive()

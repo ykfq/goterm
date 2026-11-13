@@ -751,6 +751,13 @@ func (a *App) applySettings() {
 	a.prefs.Clamp()
 	a.applyAppearance()
 	a.mgr.SetIdleTimeout(sshx.IdleTimeout(a.prefs.IdleTimeoutHours))
+	// The idle keystroke is what resets a shell's own timer and a bastion's
+	// activity detector; it is off unless the user asked for it.
+	a.mgr.SetNudge(sshx.NudgeOptions{
+		On:         a.prefs.IdleNudge,
+		Every:      time.Duration(a.prefs.IdleNudgeSeconds) * time.Second,
+		AutoSubmit: a.prefs.IdleNudgeSubmit,
+	})
 	if _, err := a.mgr.ConfigureSessionLogging(a.prefs.SessionLogging, a.logDir); err != nil {
 		a.status = "Session logging: " + err.Error()
 	}

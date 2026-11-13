@@ -681,6 +681,23 @@ func (s *Server) handleSession(conn *ssh.ServerConn, ch ssh.Channel, requests <-
 	}
 }
 
+// inputTee records what the shell reads as activity. A policy that watches the
+// user rather than the connection (an anti-idle bastion) hangs up on a client
+// that sends nothing *into the session*, which the global-request stream above
+// cannot see. The Shell handed to the shell function reads through this.
+type inputTee struct {
+	s  *Server
+	in io.Reader
+}
+
+func (t inputTee) Read(p []byte) (int, error) {
+	n, err := t.in.Read(p)
+	if n > 0 {
+		t.s.alive()
+	}
+	return n, err
+}
+
 func (s *Server) runShell(sh *Shell, ch ssh.Channel) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -688,6 +705,7 @@ func (s *Server) runShell(sh *Shell, ch ssh.Channel) {
 		}
 		sh.finishDone()
 	}()
+	sh.in = inputTee{s: s, in: sh.in}
 	s.shell(sh)
 	_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(exitStatusRequest{Status: sh.clampedCode()}))
 	_ = ch.Close()
