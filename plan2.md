@@ -189,6 +189,7 @@
 | 自定义背景色 / 主题 | `terminal.Theme` + Ghostty 主题列表 | 🚧 |
 | htop/systemctl 撑不满 | VT 自带 reflow + resize | ✅ |
 | 块字符粘连 | Ghostty 自绘块/框线，无需开关 | ✅（旧开关取消） |
+| 光标形状 | `terminal.Options.Cursor = CursorBar`：竖线而不是方块（方块在 14px 下压住相邻字符，看起来像反色单元格）；程序仍可用 DECSCUSR 改 | ✅ |
 | 中文乱码 → GB18030/Big5/Shift_JIS | Go 侧流式转码（`transform.NewReader`），设置改动对已开会话即时生效 | ✅ |
 
 ### 2.3 键盘与鼠标（plan.md §4）
@@ -200,7 +201,7 @@
 | 应用命令 Ctrl+Shift+… | mygo 菜单加速键 | 🚧 |
 | 快捷键不向会话多发字符 | 菜单/Shortcut 先于终端消费 | ✅ |
 | 选中即复制 | `terminal.CopyOnSelect` | 🚧 |
-| 多行粘贴确认 | `Options.OnPaste`（`paste.go`）：先剥终端控制序列（SGR/CSI/OSC/DCS，连同被截断的半个序列）；多行弹**可编辑的多行文本框**——里面就是将要发送的全文（旧版只给首行预览，等于让用户批准三行却只看见一行），勾选项「去掉末尾的空格与空行」默认开启（末尾空行会被 shell 当成一条命令跑掉），**Paste 是默认按钮，回车即粘贴**（按钮持有键盘；文本框故意不抢焦点，因为在那里回车必须是换行）；干净单行走终端自己的快速路径 |  |
+| 多行粘贴确认 | `Options.OnPaste`（`paste.go`）：先剥终端控制序列（SGR/CSI/OSC/DCS，连同被截断的半个序列）；多行弹**可编辑的多行文本框**——里面就是将要发送的全文（旧版只给首行预览，等于让用户批准三行却只看见一行），勾选项「逐行去掉行尾空格 + 去掉末尾空行」默认开启（末尾空行会被 shell 当成一条命令跑掉；行尾空格会混进命令里）；发送前把 CRLF/LF 统一成**单个 CR**——否则每个换行被终端读成两次回车，每两行之间多跑一条空命令；**Paste 是默认按钮，回车即粘贴**（按钮持有键盘；文本框故意不抢焦点，因为在那里回车必须是换行）；干净单行走终端自己的快速路径 | ✅ |
 | 终端 paste 接管 | 原生剪贴板，`OnPaste` | ✅ |
 | TUI 右键归程序，Shift+右键本地菜单 | Ghostty 默认行为 | ✅ |
 | OSC 52 复制（只写不读） | `NoClipboardWrite=false` + `ClipboardRead=Deny` | ✅ |

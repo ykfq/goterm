@@ -668,6 +668,9 @@ func (a *App) startTerminal(t *Tab) {
 		Font:       terminal.Font{Family: a.prefs.FontFamily, Size: float32(a.prefs.FontSize)},
 		Scrollback: a.prefs.ScrollbackMB << 20,
 		Theme:      a.terminalTheme(),
+		// A bar, not a block: at this font size a block cursor sits on top of
+		// the character it is next to and reads as a reversed cell.
+		Cursor: terminal.CursorBar,
 		// Pastes are cleaned of terminal control sequences and a multi-line
 		// paste asks first (see paste.go).
 		OnPaste: func(d transfer.Data) bool { return a.pasteText(t, d) },

@@ -136,13 +136,60 @@ func (a *App) pasteText(t *Tab, d transfer.Data) bool {
 	return true
 }
 
-// trimPasteEnd drops the whitespace at the end of a paste: the trailing spaces
-// nobody typed on purpose and the blank lines a clipboard likes to carry. A
-// trailing blank line is the one that bites — a shell runs it as an empty
-// command, and a REPL takes it as one more submit. Only the end is touched:
-// inner blank lines and leading text are what the user copied.
+// pasteLineEndings turns every line break a clipboard can carry into the one
+// byte a terminal reads as Enter: a carriage return.
+//
+// A Windows clipboard is CRLF and a Linux one LF, and both reach us. CRLF is
+// the one that hurts: the CR ends the line and the LF ends a second, empty one,
+// so a multi-line paste arrives with a blank line after every line — and the
+// shell runs that empty line too. Bracketed paste does not save it: the text
+// between the brackets is passed through as it is, `\r\n` included.
+func pasteLineEndings(s string) string {
+	if !strings.ContainsAny(s, "\r\n") {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 8)
+	for i := 0; i < len(s); i++ {
+		switch s[i] {
+		case '\r':
+			if i+1 < len(s) && s[i+1] == '\n' {
+				i++ // the LF belongs to this CR, it is not a second line
+			}
+			b.WriteByte('\r')
+		case '\n':
+			b.WriteByte('\r')
+		default:
+			b.WriteByte(s[i])
+		}
+	}
+	return b.String()
+}
+
+// trimPasteEnd drops what a clipboard adds and nobody typed on purpose: the
+// spaces at the end of every line, and the blank lines at the end. The end is
+// what bites — a trailing blank line is one more submit, and a shell runs it —
+// but a line copied out of a wrapped terminal carries a space before each
+// break, and that space lands in the command.
+//
+// Inner blank lines and leading text stay: those are what the user copied.
+// Line breaks come back as CR, ready to send (see pasteLineEndings).
 func trimPasteEnd(s string) string {
-	return strings.TrimRight(s, " \t\r\n\u00a0\u3000")
+	lines := strings.Split(pasteLineEndings(s), "\r")
+	for i, line := range lines {
+		lines[i] = strings.TrimRight(line, " \t\u00a0\u3000")
+	}
+	return strings.TrimRight(strings.Join(lines, "\r"), "\r")
+}
+
+// pasteSends is exactly what the dialog hands back to be sent: the text as
+// edited, with the line endings a terminal understands, and trimmed if the user
+// kept that box ticked.
+func pasteSends(text string, trim bool) string {
+	if trim {
+		text = trimPasteEnd(text)
+	}
+	return pasteLineEndings(text)
 }
 
 // digitsOnly keeps a one-time code to what TOTP and HOTP put in it: its

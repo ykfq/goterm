@@ -588,6 +588,30 @@ reason — and the toast carries a **Turn on** button that enables anti-idle
 (3 min, whichever nudge is configured — the space by default) right there,
 instead of leaving the user to guess why a playback of "auto logout" ended the tab.
 
+### A paste is one CR per line, and the cursor is a bar (2026-11-13)
+
+**Every pasted line arrived with a blank line after it.** The clipboard on
+Windows carries CRLF, and a terminal reads the CR as Enter and the LF as a
+second, empty Enter — so a three-line paste ran six commands, three of them
+empty. Bracketed paste does not help: the text between `ESC[200~` and
+`ESC[201~` is passed through verbatim, CRLF included. `pasteLineEndings` now
+turns CRLF and lone LF into a single CR before anything is sent, which is the
+one byte every terminal (and every program reading a PTY) reads as Enter, in
+both paste modes. Pinned by `TestPasteLineEndingsMakeOneLinePerLine`.
+
+**"Trim the trailing spaces" only trimmed the very end.** It now means what it
+says: the spaces at the end of *each* line, and the blank lines at the end. The
+first is the one that silently lands inside a command when the text was copied
+out of a wrapped terminal; the second is the one that submits an extra empty
+command. Inner blank lines and leading text still stay — they are what the user
+copied, and dropping them would corrupt a heredoc or an indented block. Pinned
+by `TestTrimPasteEnd` and `TestPasteSendsWhatTheDialogPromises`, and the dialog
+test now asserts the bytes that are sent rather than only the dialog's contents.
+
+**The cursor is a bar, not a block** (`terminal.Options.Cursor =
+terminal.CursorBar`). A block at 14 px sits on the character it is next to and
+reads as a reversed cell; a program can still change the shape with DECSCUSR.
+
 ### Moving hosts between machines (export / import)
 
 `Export` in the sidebar footer writes every saved host — **passwords and

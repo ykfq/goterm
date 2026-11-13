@@ -78,16 +78,50 @@ func TestTrimPasteEnd(t *testing.T) {
 		{"echo hi   ", "echo hi"},
 		{"echo hi\t \n\n   \n", "echo hi"},
 		// Inner blank lines and leading text are what was copied: they stay.
-		{"first\n\nsecond", "first\n\nsecond"},
+		{"first\n\nsecond", "first\r\rsecond"},
 		{"   indented\n", "   indented"},
 		// The spaces people actually paste: no-break and full width.
 		{"end\u00a0\u3000", "end"},
 		{"\n\n", ""},
+		// A space copied in front of every break lands in the command.
+		{"make -j4   \nmake test\t\n", "make -j4\rmake test"},
 	}
 	for _, tc := range cases {
 		if got := trimPasteEnd(tc.in); got != tc.want {
 			t.Errorf("trimPasteEnd(%q) = %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+// The bug the user hit: a Windows clipboard carries CRLF, and sending it as it
+// is runs two lines per line — the CR ends the command and the LF ends an empty
+// one, so every line gets a blank line after it.
+func TestPasteLineEndingsMakeOneLinePerLine(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"one", "one"},
+		{"one\ntwo", "one\rtwo"},
+		{"one\r\ntwo", "one\rtwo"},
+		{"one\r\r\ntwo", "one\r\rtwo"}, // a blank line the user copied stays
+		{"one\rtwo", "one\rtwo"},
+		{"one\n\ntwo\r\nthree\n", "one\r\rtwo\rthree\r"},
+	}
+	for _, tc := range cases {
+		if got := pasteLineEndings(tc.in); got != tc.want {
+			t.Errorf("pasteLineEndings(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// What the dialog actually sends, both ways the checkbox can be set.
+func TestPasteSendsWhatTheDialogPromises(t *testing.T) {
+	const crlf = "hostname\r\ncd /tmp  \r\nls\r\n\r\n"
+	if got, want := pasteSends(crlf, true), "hostname\rcd /tmp\rls"; got != want {
+		t.Errorf("trimmed: %q, want %q", got, want)
+	}
+	// Untrimmed keeps the blank line the user pasted, and still sends one
+	// break per line rather than two.
+	if got, want := pasteSends(crlf, false), "hostname\rcd /tmp  \rls\r\r"; got != want {
+		t.Errorf("untrimmed: %q, want %q", got, want)
 	}
 }
 
@@ -133,8 +167,10 @@ func TestPasteDialogEditsAndPastesOnEnter(t *testing.T) {
 	tt.Frame()
 	select {
 	case text := <-got:
-		if text != "make deploy\nssh host" {
-			t.Fatalf("pasted %q, want the text with its trailing tab trimmed", text)
+		// One CR per line — the byte a terminal reads as Enter — never CRLF,
+		// which runs an empty line between every two.
+		if text != "make deploy\rssh host" {
+			t.Fatalf("pasted %q, want the lines separated by CR with the trailing tab trimmed", text)
 		}
 	default:
 		t.Fatal("Enter did not paste")

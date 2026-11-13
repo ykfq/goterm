@@ -508,7 +508,7 @@ func (a *App) pasteDialog(c *ui.Context) {
 			ui.Text(c, "Every line runs as soon as it arrives. Edit anything below first — this is what gets sent.").
 				FontSize(12).TextColor(c.Theme().TextMuted)
 			ui.TextArea(c, &p.Text).MinHeight(160).MaxHeight(360).Label("Paste text")
-			ui.Checkbox(c, &p.TrimEnd, "Trim the trailing spaces and blank lines")
+			ui.Checkbox(c, &p.TrimEnd, "Trim spaces at the end of lines and blank lines at the end")
 			ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
 				if ui.Button(c, "Cancel").Clicked() {
 					p.Open = false
@@ -521,10 +521,7 @@ func (a *App) pasteDialog(c *ui.Context) {
 				btn := ui.PrimaryButton(c, "Paste").AutoFocus()
 				if btn.Clicked() {
 					run := p.Run
-					text := p.Text
-					if p.TrimEnd {
-						text = trimPasteEnd(text)
-					}
+					text := pasteSends(p.Text, p.TrimEnd)
 					p.Open = false
 					a.pasteAsk = nil
 					if run != nil && text != "" {
