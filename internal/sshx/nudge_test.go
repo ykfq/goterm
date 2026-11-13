@@ -106,28 +106,54 @@ func TestNudgeEntersOnAnEmptyLine(t *testing.T) {
 	}
 }
 
-func TestNudgeSpaceWhenACommandIsHalfTyped(t *testing.T) {
-	trace := traceNudges(t)
-	h, sess := nudgeHarness(t)
-	typeBytes(t, h, sess, "echo NEVER-RUNS")
+// A half-typed command gets a space and a backspace: two keystrokes that cancel,
+// so the line is exactly what the user walked away from — no stray space to land
+// in front of the next word — and the shell still counts two bytes of input.
+// The shell records the wire bytes, so this is about what it actually received.
+func TestNudgeSpaceAndBackspaceWhenACommandIsHalfTyped(t *testing.T) {
+	var mu sync.Mutex
+	var received []byte
+	h := newHarness(t, sshtest.Options{
+		Shell: func(sh *sshtest.Shell) {
+			buf := make([]byte, 64)
+			for {
+				n, err := sh.In().Read(buf)
+				if n > 0 {
+					mu.Lock()
+					received = append(received, buf[:n]...)
+					mu.Unlock()
+				}
+				if err != nil {
+					return
+				}
+			}
+		},
+	})
+	h.mgr.SetNudge(NudgeOptions{On: true, Every: nudgeAfter})
+	cfg := h.config()
+	cfg.KeepAliveSeconds = -1
+	sess, err := h.mgr.Connect(cfg)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	h.send(sess, "echo NEVER-RUNS")
+	bookFromNow(sess)
 
-	if !waitFor(t, 4*nudgeAfter, func() bool { return len(*trace) > 0 }) {
-		t.Fatal("no keystroke arrived on a session sitting on a half-typed command")
+	got := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return string(received)
 	}
-	if got := (*trace)[0]; got != "\" \"" {
-		t.Fatalf("the keystroke was %s, want a space: an Enter here would run the command", got)
+	if !waitFor(t, 4*nudgeAfter, func() bool { return strings.Contains(got(), " \x7f") }) {
+		t.Fatalf("no space-and-backspace arrived at the half-typed line: %q", got())
 	}
-
-	// The echo of the keystroke comes back from the shell, which is a hop
-	// behind: wait for it rather than sampling.
-	echoed := func() string { return printable(h.rec.output(sess.ID())) }
-	if !waitFor(t, 3*nudgeAfter, func() bool { return strings.Contains(echoed(), "echo NEVER-RUNS ") }) {
-		t.Fatalf("no space reached the half-typed line:\n%q", echoed())
+	// The pair, in that order, with nothing between them.
+	if !strings.HasSuffix(strings.TrimRight(got(), " \x7f"), "echo NEVER-RUNS") {
+		t.Fatalf("the line was changed rather than nudge-and-erased: %q", got())
 	}
-	// An Enter would have shown up as a second prompt, and the command would
-	// have run.
-	if strings.Count(echoed(), "NEVER-RUNS\r\n") > 0 {
-		t.Fatalf("the half-typed command was submitted:\n%q", echoed())
+	// And never an Enter: that would have run it.
+	if strings.Contains(got(), "\r") || strings.Contains(got(), "\n") {
+		t.Fatalf("the half-typed command was submitted: %q", got())
 	}
 }
 
@@ -409,8 +435,8 @@ func TestNudgeSurvivesALoneEscape(t *testing.T) {
 	if !waitFor(t, 4*nudgeAfter, func() bool { return len(*trace) > 0 }) {
 		t.Fatalf("a session holding a lone ESC was never nudged again")
 	}
-	if got := (*trace)[0]; got != "\" \"" {
-		t.Fatalf("the keystroke was %s, want a space: an Enter there could submit something", got)
+	if got := (*trace)[0]; got != "\" \\x7f\"" {
+		t.Fatalf("the keystroke was %s, want a space and a backspace: an Enter there could submit something", got)
 	}
 }
 

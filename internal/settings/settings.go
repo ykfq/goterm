@@ -93,10 +93,6 @@ type Settings struct {
 	// IdleNudgeSeconds is the window between keystrokes. Zero means the default
 	// of one minute.
 	IdleNudgeSeconds int `json:"idleNudgeSeconds,omitempty"`
-	// IdleNudgeSubmit lets the empty-line keystroke become a space when an
-	// Enter would be unsafe (for instance mid-transfer). Off by default: a
-	// shell that only counts completed lines needs a real Enter.
-	IdleNudgeSubmit bool `json:"idleNudgeSubmit,omitempty"`
 }
 
 // Default is what a fresh install starts with: the 1.x defaults, translated to

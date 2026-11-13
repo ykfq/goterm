@@ -179,9 +179,8 @@ func NewApp() (*App, error) {
 	// "on" in the dialog and does nothing until the next click is worse than no
 	// switch at all.
 	mgr.SetNudge(sshx.NudgeOptions{
-		On:         prefs.IdleNudge,
-		Every:      time.Duration(prefs.IdleNudgeSeconds) * time.Second,
-		AutoSubmit: prefs.IdleNudgeSubmit,
+		On:    prefs.IdleNudge,
+		Every: time.Duration(prefs.IdleNudgeSeconds) * time.Second,
 	})
 	logDir, err := appdir.Path("logs")
 	if err != nil {
@@ -802,9 +801,8 @@ func (a *App) applySettings() {
 	// activity detector; it is on by default and switched off here or in the
 	// dialog.
 	a.mgr.SetNudge(sshx.NudgeOptions{
-		On:         a.prefs.IdleNudge,
-		Every:      time.Duration(a.prefs.IdleNudgeSeconds) * time.Second,
-		AutoSubmit: a.prefs.IdleNudgeSubmit,
+		On:    a.prefs.IdleNudge,
+		Every: time.Duration(a.prefs.IdleNudgeSeconds) * time.Second,
 	})
 	if _, err := a.mgr.ConfigureSessionLogging(a.prefs.SessionLogging, a.logDir); err != nil {
 		a.status = "Session logging: " + err.Error()

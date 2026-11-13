@@ -21,9 +21,11 @@ import (
 //
 //   - Line empty: a carriage return. It is what a user's Enter does on an
 //     empty line — the shell answers with a fresh prompt and nothing runs.
-//   - Anything else on the line: a space, with no Enter anywhere near it. A
-//     space cannot submit a line, and it is still typed input, which is what
-//     `TMOUT` and an activity-watching bastion count.
+//   - Anything else on the line: a space and then a backspace. Two keystrokes
+//     that cancel each other, so the line the user walked away from is exactly
+//     as they left it — no stray space to land in front of the next word —
+//     while the far side still counts them as typed input, which is the whole
+//     point.
 //
 // "Anything else" deliberately swallows the cases the old code used to refuse:
 // a half-typed command (a space is safe), a line recalled from history with an
@@ -56,11 +58,6 @@ type NudgeOptions struct {
 	On bool
 	// Every is the window between nudges; zero means DefaultNudgeEvery.
 	Every time.Duration
-	// AutoSubmit allows the empty-line nudge to fall back to a space when it is
-	// unsafe — during a transfer, or when the session cannot tell whether the
-	// line is empty. Off by default: someone who asked for Enter asked for the
-	// thing that resets a shell which only counts completed lines.
-	AutoSubmit bool
 }
 
 // interval is the configured window with the default filled in.
@@ -220,12 +217,16 @@ func (s *Session) nudgeOnce() bool {
 		return false
 	}
 	state, _ := s.typedLine()
-	key := "space"
+	key := "space+backspace"
 	if state == "empty" {
 		key = "enter"
 		_ = s.writeNudge([]byte("\r"))
 	} else {
-		_ = s.writeNudge([]byte(" "))
+		// Space, then the erase key. The two cancel on any line editor that
+		// understands Backspace, so nothing the user typed changes; a line
+		// editor that does not still keeps the two bytes as input, which is all
+		// the shell's timer needs.
+		_ = s.writeNudge([]byte(" \x7f"))
 	}
 	s.diary("%s: keystroke %s (line=%s)", s.info.Target, key, state)
 	return true
