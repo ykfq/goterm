@@ -140,6 +140,7 @@ func newTransferConn(s *sshx.Session, enc encode.Name, chooser Chooser) (*transf
 	if err != nil {
 		return nil, err
 	}
+	s.SetTransferring(true)
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
 	c := &transferConn{
