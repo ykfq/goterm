@@ -372,18 +372,53 @@ follows:
 | cursor moved, nothing typed | one right arrow | The shell's own line editor keeps the line; the key changes nothing. |
 | cannot tell (half a sequence) | nothing | Guessing here is how the red line was broken in the first place. |
 
-It ships **off**, with a switch, an interval (default **2 min**) and a "fall
-back to a space" option for someone who cannot tolerate an Enter at all. The
-gates that remain: 5 s of quiet output first, never while a transfer owns the
-stream (红线 4), never counted as the user's own activity (红线 8 — the idle
-window still ends the defence), and a keystroke that cannot be sent postpones
-rather than spins.
+It ships **on**, with a switch to turn it off, an interval (default **2 min**)
+and a "fall back to a space" option for someone who cannot tolerate an Enter at
+all. The gates that remain: 5 s of quiet output first, never while a transfer
+owns the stream (红线 4), never counted as the user's own activity (红线 8 — the
+idle window still ends the defence), and a keystroke that cannot be sent
+postpones rather than spins.
 
-Two corrections came out of building it: the connection-level probe's cadence
-is now **2 minutes** too (the user asked for that number), and the fake bastion
-in `internal/sshtest` now counts bytes written *into the session channel* as
-activity — before, it only counted global requests, so "a user-activity policy
-survives on keystrokes" could not be tested at all.
+**Shipping it off was the bug that came back twice.** Sessions were still being
+logged out after the keystroke had been built, wired and tested, for the dullest
+of reasons: a setting nobody had flipped. `"idleNudge": false` is what every file
+the app had ever written said, because that was the default, and a reader cannot
+tell it from a choice. Three things changed, and each is pinned:
+
+- The default is **on**. The failure it defends against is silent — a session
+  just goes away — and the layers below it cost nothing when the line is busy.
+- A file without a `version` was written before schema 2, so its `false` is the
+  old default, not a decision: `settings.Load` turns the keystroke on once,
+  stamps `"version": 2` and rewrites the file, after which the switch is the
+  user's again. Pinned by `TestALegacyFileGetsTheIdleKeystrokeOnceAndSaysSo`
+  and, from the app's side, by
+  `TestASettingsFileFromTheOldBuildStillKeepsSessionsAlive`.
+- The status bar now shows `idle key 120s · N sent · next 47s`. "The switch is
+  on" and "a byte actually left" are different claims, and only the second one
+  keeps a session alive; a count that climbs while the tab sits there is the
+  difference made visible.
+
+**The window is a deadline, not a delay.** Two arithmetic mistakes were hidden
+under the old 100 ms polling loop, and both cost a keystroke: `jitter` was
+*added* to the booking, so a two-minute setting fired at up to 2 min 12 s — a
+`TMOUT` of exactly two minutes won the race; and after every keystroke the next
+booking was made from "now" at the moment the loop woke, so one late wake pushed
+the cadence out by another whole window (a keystroke every window became one
+every two). The booking is now `max(last output, last keystroke) + window`, with
+the jitter subtracted rather than added: a keystroke a few seconds early is
+free, one a few seconds late is a lost session. `pause` is one timer instead of
+a poll, so an idle session no longer wakes ten times a second to read a counter.
+Pinned by `TestNudgeNeverLandsLaterThanTheWindow` (the old code delivers three
+keystrokes in ten seconds where four are due) and by the bastion test below,
+which hangs up a session two seconds after its last input.
+
+Two corrections came out of building it: the fake bastion in `internal/sshtest`
+now counts bytes written *into the session channel* as activity — before, it
+only counted global requests, so "a user-activity policy survives on keystrokes"
+could not be tested at all — and the connection-level probe went back to **15 s**
+(see below). It had been raised to two minutes by the same conflation the
+keystroke suffered from: two minutes is what the *user asked the keystroke for*,
+and the probe is a different layer defending different timers.
 
 ### Keepalives: staying connected while you think
 

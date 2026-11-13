@@ -520,6 +520,17 @@ func (a *App) statusBar(c *ui.Context) {
 		if info.LogPath != "" {
 			left += " · log: " + shortPath(info.LogPath)
 		}
+		// The idle keystroke says whether it is armed and whether anything has
+		// actually left. A switch that reads "on" proves nothing; a count that
+		// climbs while the session sits there is the thing keeping it alive.
+		if t.Sess != nil {
+			if on, sent, dueIn := t.Sess.NudgeState(); on {
+				left += fmt.Sprintf(" · idle key %ds · %d sent", a.prefs.IdleNudgeSeconds, sent)
+				if dueIn > 0 {
+					left += fmt.Sprintf(" · next %ds", int(dueIn.Round(time.Second)/time.Second))
+				}
+			}
+		}
 	}
 	ui.Row(c).Height(24).Padding(0, 10).Gap(12).Background(c.Theme().Surface).Children(func() {
 		ui.Text(c, left).FontSize(10).TextColor(c.Theme().TextMuted).Grow(1).MaxLines(1)

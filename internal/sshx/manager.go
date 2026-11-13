@@ -160,8 +160,17 @@ func NewManager(hostKeys *HostKeyStore) *Manager {
 // change is applied in place: an active session keeps its own clock, it is only
 // the threshold that moves.
 
+// Nudge reports what the idle keystroke is set to, which is what a test — or a
+// status line — needs to tell "configured" from "assumed".
+func (m *Manager) Nudge() NudgeOptions {
+	if p := m.nudge.Load(); p != nil {
+		return *p
+	}
+	return NudgeOptions{}
+}
+
 // SetNudge configures the idle keystroke (see nudge.go) for every session,
-// open and future. It is off unless the user turns it on.
+// open and future.
 func (m *Manager) SetNudge(opts NudgeOptions) {
 	m.nudge.Store(&opts)
 	m.mu.RLock()

@@ -24,15 +24,16 @@ import (
 // remote shell would run whatever half-typed line is sitting in its buffer,
 // which is exactly the kind of surprise a keepalive must not cause.
 const (
-	// DefaultKeepAlive is how often an idle session is poked.
+	// DefaultKeepAlive is how often an idle connection is poked.
 	//
-	// Two minutes, the cadence the user asked for: a connection-level timer (a
-	// bastion, a load balancer, an sshd `ClientAliveInterval` unset) fires in
-	// minutes, and two minutes stays ahead of the five-minute ones with room
-	// for a slow reply. The cost is one four-byte request and its reply per
-	// two minutes, which is also closer to what `ssh -o ServerAliveInterval`
-	// users run in practice.
-	DefaultKeepAlive = 2 * time.Minute
+	// Fifteen seconds, and it is deliberately not the keystroke's cadence. The
+	// two layers defend different timers: this one keeps a *connection* alive
+	// (a NAT table, a load balancer, an sshd `ClientAliveInterval`), and those
+	// idle budgets are the ones measured in tens of seconds — a probe every two
+	// minutes is already too slow for a one-minute one, and the failure is
+	// silent. The cost is one four-byte request and its reply per quarter
+	// minute, and nothing is written to the PTY.
+	DefaultKeepAlive = 15 * time.Second
 	// keepAliveStrikes is how many unanswered probes in a row mean "the link is
 	// gone" rather than "the link is slow".
 	keepAliveStrikes = 3

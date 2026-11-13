@@ -113,50 +113,45 @@ func (o NudgeOptions) clamped() NudgeOptions {
 // seen: "every" seconds after it. Output moves the booking, so a program that
 // keeps printing is never interrupted, and the loop is back to sleeping until
 // then rather than narrowing its timer towards the next output.
-// pause sleeps for d, and returns early when a revive arrives. It reports
-// whether that happened, so the caller can rebook.
+// pause sleeps for d and returns early when a revive arrives, so the caller
+// rebooks. It reports whether that happened.
+//
+// It is one timer, not a poll. An idle session can sit here for two minutes at
+// a stretch, and waking it ten times a second to read a counter was work
+// nobody asked for.
 func (s *Session) pause(d time.Duration) (revived bool) {
-	gen := s.nudgeRevive.Load()
-	deadline := time.Now().Add(d)
 	timer := time.NewTimer(d)
 	defer timer.Stop()
-	for {
-		select {
-		case <-timer.C:
-			return s.nudgeRevive.Load() != gen
-		case <-time.After(100 * time.Millisecond):
-			if s.nudgeRevive.Load() != gen {
-				return true
-			}
-			if left := time.Until(deadline); left > 0 {
-				timer.Reset(minDuration(left, 100*time.Millisecond))
-				continue
-			}
-			return false
-		}
+	select {
+	case <-timer.C:
+		return false
+	case <-s.wake():
+		return true
 	}
 }
 
-func minDuration(a, b time.Duration) time.Duration {
-	if a < b {
-		return a
-	}
-	return b
+// wake is the channel a revive is delivered on. One slot, so a signal raised
+// while nothing is waiting is remembered once and costs one early pass.
+func (s *Session) wake() chan struct{} {
+	s.nudgeWakeOnce.Do(func() { s.nudgeWake = make(chan struct{}, 1) })
+	return s.nudgeWake
 }
 
 // revive wakes the loop out of a pause after a transfer: the booking it was
 // holding may be a nudgePause away, and a transfer that just ended is exactly
 // when the keystroke is worth having again.
-func (s *Session) revive() { s.nudgeRevive.Store(time.Now().UnixNano()) }
+func (s *Session) revive() {
+	select {
+	case s.wake() <- struct{}{}:
+	default:
+	}
+}
 
 // nudgeLoop is started once per session. The session's time at the prompt is
 // what the first keystroke is measured from, so a session that has been open
 // and quiet arrives here already due rather than starting a fresh window.
 func (s *Session) nudgeLoop(stop <-chan struct{}, gate func() bool) {
 	var lastSeen int64 = -1
-	// nudgeSent says the clock has moved past a keystroke at least once; until
-	// then every pass rebooks from the activity clock.
-	nudgeSent := false
 	for {
 		opts := s.nudgeOptions()
 		if !opts.On {
@@ -180,15 +175,23 @@ func (s *Session) nudgeLoop(stop <-chan struct{}, gate func() bool) {
 		}
 		if lastSeen == -1 || seen != lastSeen {
 			lastSeen = seen
+			// The window is measured from whichever came last: output reaching
+			// the terminal, or our own last keystroke — a shell that answered
+			// nothing still gets one at every window.
 			base := time.Unix(0, seen)
-			if nudgeSent {
-				// After the first keystroke the window counts from *it*, not
-				// from a print the shell may never make again.
-				base = time.Now()
+			if at := time.Unix(0, s.nudgeSentAt.Load()); at.After(base) {
+				base = at
 			}
 			quietAt := base.Add(nudgeQuietWait())
+			// The booking is never later than the window. A TMOUT of exactly
+			// two minutes has no room for a jitter on top of a two-minute
+			// setting, and a keystroke a few seconds early costs nothing.
+			due := base.Add(opts.interval() - jitter(opts.interval()))
+			if due.Before(quietAt) {
+				due = quietAt
+			}
 			s.nudgeQuietAt.Store(quietAt.UnixNano())
-			s.nudgeDue.Store(quietAt.Add(opts.interval() + jitter(opts.interval())).UnixNano())
+			s.nudgeDue.Store(due.UnixNano())
 		}
 		quietAt := time.Unix(0, s.nudgeQuietAt.Load())
 		due := time.Unix(0, s.nudgeDue.Load())
@@ -212,10 +215,9 @@ func (s *Session) nudgeLoop(stop <-chan struct{}, gate func() bool) {
 			lastSeen = seen
 			continue
 		}
-		// From here on the loop keeps its own clock: a session that answers
-		// nothing — the quiet login this feature exists for — must still be
-		// nudged once per window rather than on every pass.
-		nudgeSent = true
+		// A successful keystroke is booked from the moment it went out, not
+		// from when the loop next passes: rebasing on "now" after a long sleep
+		// is how a keystroke every window became one every two windows.
 		if !s.nudgeOnce() {
 			// Nothing can be sent right now. The loop comes back later with
 			// this booking still in hand; rebuilding it from an activity clock
@@ -232,7 +234,10 @@ func (s *Session) nudgeLoop(stop <-chan struct{}, gate func() bool) {
 }
 
 // jitter spreads the bookings of many sessions by up to a tenth of the window,
-// so a dozen tabs do not type into their shells on the same tick.
+// so a dozen tabs do not type into their shells on the same tick. It always
+// comes off the booking, never on top of it: a keystroke a few seconds early is
+// free, and one a few seconds late is a session lost to a timer that fired
+// first.
 func jitter(interval time.Duration) time.Duration {
 	span := interval / 10
 	if span <= 0 {
@@ -306,8 +311,26 @@ func (s *Session) writeNudge(p []byte) error {
 		return err
 	}
 	s.bytesOut.Add(int64(len(p)))
+	s.nudgeCount.Add(1)
+	s.nudgeSentAt.Store(time.Now().UnixNano())
 	nudgeTrace("%q", string(p))
 	return nil
+}
+
+// NudgeState reports the idle keystroke for this session: whether it is armed,
+// how many have gone out, and how long until the next one is due. The status
+// bar shows it, because "the setting is on" and "a byte actually left" are
+// different claims and only the second one keeps a session alive.
+func (s *Session) NudgeState() (on bool, sent int64, dueIn time.Duration) {
+	on = s.nudgeOptions().On
+	sent = s.nudgeCount.Load()
+	if due := s.nudgeDue.Load(); due > 0 {
+		dueIn = time.Until(time.Unix(0, due))
+		if dueIn < 0 {
+			dueIn = 0
+		}
+	}
+	return on, sent, dueIn
 }
 
 // Test hooks. Each has one fixed value in production and is only set by the

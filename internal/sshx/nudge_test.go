@@ -331,3 +331,66 @@ func TestNudgeReachesACompletelyQuietShell(t *testing.T) {
 		t.Fatalf("%d keystrokes in three windows: the interval is not being kept", len(got))
 	}
 }
+
+// A keystroke booked for "every two minutes" must not arrive at two minutes
+// and twelve seconds. That is what a jitter added on top of the window cost:
+// a shell whose TMOUT is exactly the window lost the race, and the user met a
+// disconnect with the feature apparently switched on.
+func TestNudgeNeverLandsLaterThanTheWindow(t *testing.T) {
+	var mu sync.Mutex
+	var stamps []time.Time
+	traced = func(string, ...any) {
+		mu.Lock()
+		stamps = append(stamps, time.Now())
+		mu.Unlock()
+	}
+	t.Cleanup(func() { traced = nil })
+
+	const every = 2 * time.Second
+	h := newHarness(t, sshtest.Options{})
+	h.mgr.SetNudge(NudgeOptions{On: true, Every: every})
+	cfg := h.config()
+	cfg.KeepAliveSeconds = -1
+	sess := h.connect(cfg)
+	h.expectOutput(sess, readyMarker)
+	bookFromNow(sess)
+
+	count := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(stamps)
+	}
+	// Three keystrokes give two steady-state gaps; the first one may still be
+	// carrying the booking made during connect.
+	if !waitFor(t, 5*every, func() bool { return count() >= 4 }) {
+		t.Fatalf("only %d keystrokes in %v", count(), 5*every)
+	}
+
+	mu.Lock()
+	got := append([]time.Time(nil), stamps...)
+	mu.Unlock()
+	for i := 1; i < len(got); i++ {
+		gap := got[i].Sub(got[i-1])
+		if gap > every+400*time.Millisecond {
+			t.Fatalf("keystroke %d came %v after the one before; the window is %v", i+1, gap.Round(time.Millisecond), every)
+		}
+		if gap < time.Second {
+			t.Fatalf("keystroke %d came %v after the one before; the loop is not waiting for the window", i+1, gap.Round(time.Millisecond))
+		}
+	}
+}
+
+// NudgeState is what the status bar reads, and what tells "the switch is on"
+// apart from "a byte left this session".
+func TestNudgeStateCountsWhatLeft(t *testing.T) {
+	_, sess := nudgeHarness(t)
+	if on, sent, _ := sess.NudgeState(); !on || sent != 0 {
+		t.Fatalf("fresh session: on=%v sent=%d, want on with nothing sent", on, sent)
+	}
+	if !waitFor(t, nudgeQuiet+3*nudgeAfter, func() bool { _, sent, _ := sess.NudgeState(); return sent > 0 }) {
+		t.Fatal("the status bar would still show nothing sent")
+	}
+	if on, sent, dueIn := sess.NudgeState(); !on || sent < 1 || dueIn <= 0 {
+		t.Fatalf("after a keystroke: on=%v sent=%d next=%v, want an armed session with a booking", on, sent, dueIn)
+	}
+}

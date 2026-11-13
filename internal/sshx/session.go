@@ -121,9 +121,20 @@ type Session struct {
 	// when the session opened — the fallback clock before any output arrives.
 	nudgeDue     atomic.Int64
 	nudgeQuietAt atomic.Int64
-	// nudgeRevive is bumped when something makes waiting pointless (a transfer
-	// ending): the loop stops sleeping and books again from the current clock.
-	nudgeRevive atomic.Int64
+	// nudgeWake interrupts a booking when waiting is pointless (a transfer
+	// ended): the loop stops sleeping and books again from the current clock.
+	// A channel, not a polled counter: a session may be asleep for two minutes
+	// and waking it ten times a second to check a number is work nobody asked
+	// for.
+	nudgeWakeOnce sync.Once
+	nudgeWake     chan struct{}
+	// nudgeCount is how many keystrokes this session has actually sent (see
+	// NudgeState). A count on screen is the only way to tell "armed" from
+	// "working" from outside the process.
+	nudgeCount atomic.Int64
+	// nudgeSentAt is when this session last typed a keystroke of its own. The
+	// next one is booked a window after the later of it and the last output.
+	nudgeSentAt atomic.Int64
 	connectedAt atomic.Int64
 	// transferring is set while a transfer owns the byte stream.
 	transferring atomic.Bool

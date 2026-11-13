@@ -111,3 +111,87 @@ func TestBoundariesStayAsGiven(t *testing.T) {
 		t.Fatalf("boundary values were changed: %+v", s)
 	}
 }
+
+// The idle keystroke is what keeps a shell with TMOUT, and a bastion that
+// watches typed input, from logging the session out. It must be armed on a
+// fresh install: a feature behind a switch nobody knows to flip is a feature
+// that does not exist.
+func TestAFreshInstallArmsTheIdleKeystroke(t *testing.T) {
+	d := Default()
+	if !d.IdleNudge {
+		t.Fatal("default settings leave the idle keystroke off")
+	}
+	if d.IdleNudgeSeconds != DefaultNudgeSeconds {
+		t.Fatalf("default window is %ds, want %ds", d.IdleNudgeSeconds, DefaultNudgeSeconds)
+	}
+	if d.Version != SchemaVersion {
+		t.Fatalf("default version is %d, want %d", d.Version, SchemaVersion)
+	}
+	got := Load(filepath.Join(t.TempDir(), "settings.json"))
+	if !got.IdleNudge {
+		t.Fatal("a missing settings file loaded with the keystroke off")
+	}
+}
+
+// Before schema 2 every file the app wrote said "idleNudge": false, because
+// that was the default. Reading it as a choice is exactly how the keystroke
+// came to run on nobody's machine.
+func TestALegacyFileGetsTheIdleKeystrokeOnceAndSaysSo(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	legacy := `{"theme":"dark","fontSize":15,"scrollbackMB":16,"idleNudge":false}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := Load(path)
+	if !got.IdleNudge {
+		t.Fatal("a file written before schema 2 left the keystroke off")
+	}
+	if got.Version != SchemaVersion {
+		t.Fatalf("migrated file says version %d, want %d", got.Version, SchemaVersion)
+	}
+	// The rest of the file is the user's and must survive the migration.
+	if got.Theme != "dark" || got.FontSize != 15 || got.ScrollbackMB != 16 {
+		t.Fatalf("migration changed other settings: %+v", got)
+	}
+	// Rewritten, so the next start reads a decision rather than an absence.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), `"version"`) == false {
+		t.Fatalf("migrated file was not stamped: %s", raw)
+	}
+}
+
+// After the migration the switch is the user's again: turning it off has to
+// stick, or the only way to silence it would be deleting the file.
+func TestTurningTheIdleKeystrokeOffSticks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	want := Default()
+	want.IdleNudge = false
+	want.IdleNudgeSeconds = 45
+	if err := want.Save(path); err != nil {
+		t.Fatal(err)
+	}
+	got := Load(path)
+	if got.IdleNudge {
+		t.Fatal("turning the keystroke off did not survive a save and load")
+	}
+	if got.IdleNudgeSeconds != 45 {
+		t.Fatalf("window came back as %ds, want 45s", got.IdleNudgeSeconds)
+	}
+}
+
+func TestAFileFromTheFutureIsNotDowngraded(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(path, []byte(`{"version":99,"idleNudge":false}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := Load(path)
+	if got.IdleNudge {
+		t.Fatal("a newer file's explicit \"off\" was overridden")
+	}
+	if got.Version != 99 {
+		t.Fatalf("version rewritten to %d", got.Version)
+	}
+}

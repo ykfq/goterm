@@ -40,10 +40,22 @@ const (
 	MaxHighlightWordLen = 64
 )
 
+// SchemaVersion is stamped into every file this package writes.
+//
+// It exists for one reason a bool cannot serve: telling a choice from an old
+// default. Before schema 2 the idle keystroke was opt-in and off, so every
+// settings.json in the wild says "idleNudge": false — written by the app, not
+// chosen by anyone. Reading that as a choice is how the feature the user asked
+// for ran on no machine. A file without a version was written by a build whose
+// false meant nothing, and gets the new default once.
+const SchemaVersion = 2
+
 // Settings is the whole preference file. Zero values are repaired by Clamp, so
 // an older or hand-edited file cannot produce a terminal with no scrollback or
 // a font of size 0.
 type Settings struct {
+	// Version is the schema that wrote this file (see SchemaVersion).
+	Version          int     `json:"version,omitempty"`
 	Theme            string  `json:"theme"` // system | light | dark
 	FontFamily       string  `json:"fontFamily"`
 	FontSize         int     `json:"fontSize"`
@@ -67,9 +79,11 @@ type Settings struct {
 	HighlightWords []string `json:"highlightWords,omitempty"`
 
 	// IdleNudge turns the idle keystroke on (see internal/sshx/nudge.go). It is
-	// off by default: the keystroke reaches the shell, which is exactly what a
-	// system with a TMOUT or an activity-watching bastion needs and exactly
-	// what nobody else should get unasked.
+	// on by default, because the sessions it defends — a shell with TMOUT, a
+	// bastion that watches typed input — are the common case and the failure
+	// is silent: the user just gets logged out. A quiet window with no output
+	// is the only thing that triggers it, and a session that is being used is
+	// never touched.
 	IdleNudge bool `json:"idleNudge"`
 	// IdleNudgeSeconds is the quiet window between keystrokes. Zero means the
 	// default of two minutes.
@@ -84,6 +98,8 @@ type Settings struct {
 // the few units that changed (scrollback is MB, not lines).
 func Default() Settings {
 	return Settings{
+		Version:          SchemaVersion,
+		IdleNudge:        true,
 		Theme:            "system",
 		FontFamily:       "",
 		FontSize:         14,
@@ -100,6 +116,9 @@ func Default() Settings {
 
 // Clamp repairs values that are missing or out of range.
 func (s *Settings) Clamp() {
+	if s.Version < SchemaVersion {
+		s.Version = SchemaVersion
+	}
 	if s.Theme != "light" && s.Theme != "dark" {
 		s.Theme = "system"
 	}
@@ -185,8 +204,26 @@ func Load(path string) Settings {
 	if err != nil {
 		return s
 	}
+	// Read the version on its own first: unmarshalling into Default() leaves a
+	// missing key holding the new default, which would make every old file look
+	// current.
+	var header struct {
+		Version int `json:"version"`
+	}
+	if err := json.Unmarshal(data, &header); err != nil {
+		return Default()
+	}
 	if err := json.Unmarshal(data, &s); err != nil {
 		return Default()
+	}
+	if header.Version < SchemaVersion {
+		// An older file. Its "idleNudge": false is the old default, not a
+		// decision, so the new default takes it — and the file is rewritten at
+		// once, so the next start reads a choice rather than an absence.
+		s.IdleNudge = true
+		s.Clamp()
+		_ = s.Save(path)
+		return s
 	}
 	s.Clamp()
 	return s
