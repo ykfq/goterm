@@ -270,3 +270,64 @@ func TestIdleKeystrokeDefeatsAUserActivityPolicy(t *testing.T) {
 		t.Fatalf("the session did not survive the policy: %+v\n%s", info, h.rec.noticeText())
 	}
 }
+
+// TestNudgeReachesACompletelyQuietShell is the case the user hit: a login that
+// prints nothing at all until its own TMOUT fires. There is no output to start
+// a clock from, and the first keystroke must not wait for one that never comes.
+// The shell records what it actually received, so "it was nudged" is a fact
+// about the wire rather than about our own bookkeeping.
+func TestNudgeReachesACompletelyQuietShell(t *testing.T) {
+	var mu sync.Mutex
+	var received []byte
+	h := newHarness(t, sshtest.Options{
+		Shell: func(sh *sshtest.Shell) {
+			buf := make([]byte, 64)
+			for {
+				n, err := sh.In().Read(buf)
+				if n > 0 {
+					mu.Lock()
+					received = append(received, buf[:n]...)
+					mu.Unlock()
+				}
+				if err != nil {
+					return
+				}
+			}
+		},
+	})
+	h.mgr.SetNudge(NudgeOptions{On: true, Every: nudgeAfter})
+	cfg := h.config()
+	cfg.KeepAliveSeconds = -1
+
+	sess, err := h.mgr.Connect(cfg)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if sess.lastOutput.Load() != 0 {
+		t.Fatalf("this shell was supposed to print nothing, but the output clock is %d",
+			sess.lastOutput.Load())
+	}
+
+	keystroke := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(received) > 0
+	}
+	if !waitFor(t, 3*nudgeQuietWait(), keystroke) {
+		t.Fatal("a shell that printed nothing was never nudged; TMOUT would have killed it")
+	}
+	// One keystroke per window, not a flood: a shell that answers nothing gives
+	// the clock nothing to measure, and the loop must still keep its interval.
+	// Before the first keystroke moved the clock, this shell was nudged nine
+	// times in two seconds because every pass rebooked from an unchanged clock.
+	time.Sleep(2 * nudgeAfter)
+	mu.Lock()
+	got := string(received)
+	mu.Unlock()
+	if got != "\r" && got != "\r\r" && got != "\r\r\r" {
+		t.Fatalf("the keystrokes were %q; a quiet shell should see one per window", got)
+	}
+	if len(got) > 3 {
+		t.Fatalf("%d keystrokes in three windows: the interval is not being kept", len(got))
+	}
+}

@@ -149,8 +149,14 @@ func minDuration(a, b time.Duration) time.Duration {
 // when the keystroke is worth having again.
 func (s *Session) revive() { s.nudgeRevive.Store(time.Now().UnixNano()) }
 
+// nudgeLoop is started once per session. The session's time at the prompt is
+// what the first keystroke is measured from, so a session that has been open
+// and quiet arrives here already due rather than starting a fresh window.
 func (s *Session) nudgeLoop(stop <-chan struct{}, gate func() bool) {
 	var lastSeen int64 = -1
+	// nudgeSent says the clock has moved past a keystroke at least once; until
+	// then every pass rebooks from the activity clock.
+	nudgeSent := false
 	for {
 		opts := s.nudgeOptions()
 		if !opts.On {
@@ -174,7 +180,13 @@ func (s *Session) nudgeLoop(stop <-chan struct{}, gate func() bool) {
 		}
 		if lastSeen == -1 || seen != lastSeen {
 			lastSeen = seen
-			quietAt := time.Unix(0, seen+int64(nudgeQuietWait()))
+			base := time.Unix(0, seen)
+			if nudgeSent {
+				// After the first keystroke the window counts from *it*, not
+				// from a print the shell may never make again.
+				base = time.Now()
+			}
+			quietAt := base.Add(nudgeQuietWait())
 			s.nudgeQuietAt.Store(quietAt.UnixNano())
 			s.nudgeDue.Store(quietAt.Add(opts.interval() + jitter(opts.interval())).UnixNano())
 		}
@@ -200,6 +212,10 @@ func (s *Session) nudgeLoop(stop <-chan struct{}, gate func() bool) {
 			lastSeen = seen
 			continue
 		}
+		// From here on the loop keeps its own clock: a session that answers
+		// nothing — the quiet login this feature exists for — must still be
+		// nudged once per window rather than on every pass.
+		nudgeSent = true
 		if !s.nudgeOnce() {
 			// Nothing can be sent right now. The loop comes back later with
 			// this booking still in hand; rebuilding it from an activity clock
@@ -236,7 +252,22 @@ func (s *Session) nudgeOnce() bool {
 		// A transfer owns the stream; the space would land inside its data.
 		return false
 	}
-	state, _ := s.typedLine()
+	if s.lastOutput.Load() == 0 {
+		// The session has printed nothing at all, so an empty line is the only
+		// reading of the prompt that is possible — and the only keystroke it
+		// allows is the one that runs nothing. Without this, a shell that says
+		// nothing for minutes (a quiet login, a `TMOUT` about to fire) would
+		// never be nudged at all.
+		_ = s.writeNudge([]byte("\r"))
+		return true
+	}
+	state, empty := s.typedLine()
+	if !empty && state == "pending" {
+		// Half a sequence is on the wire; whatever arrives next completes it,
+		// and guessing at the line before then is how a command gets run.
+		return false
+	}
+	_ = empty
 	switch state {
 	case "empty":
 		// The shell's line is empty: Enter prints a fresh prompt and runs

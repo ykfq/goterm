@@ -171,6 +171,16 @@ func NewApp() (*App, error) {
 
 	prefs := settings.Load(filepath.Join(dir, "settings.json"))
 	mgr.SetIdleTimeout(sshx.IdleTimeout(prefs.IdleTimeoutHours))
+	// Every setting the manager acts on has to be handed over here as well as
+	// from applySettings: this is the path a saved file takes on start-up, and
+	// applySettings only runs when a control is touched. A switch that reads
+	// "on" in the dialog and does nothing until the next click is worse than no
+	// switch at all.
+	mgr.SetNudge(sshx.NudgeOptions{
+		On:         prefs.IdleNudge,
+		Every:      time.Duration(prefs.IdleNudgeSeconds) * time.Second,
+		AutoSubmit: prefs.IdleNudgeSubmit,
+	})
 	logDir, err := appdir.Path("logs")
 	if err != nil {
 		return nil, fmt.Errorf("locate log directory: %w", err)
