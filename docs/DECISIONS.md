@@ -354,6 +354,37 @@ What sharing means in practice:
 
 **Pane size.** The PTY is told the size of the pane looking at it — always, on every path that hands a session to a tab. That sounds like a detail until it is not: a tab is created and its dial starts in the same tick, but the pane is only measured a frame later, so the fit happens while there is no session to tell and the PTY is left at the size it was dialled with (`100x30` on the first tab, the last pane's geometry after that). Adoption used to send a resize only when that fit *changed* something — which by then it never had — so a session stayed `100x30` inside a `170x45` window and `htop`, `less` and `systemctl status` painted a small screen in the corner until a window resize forced a difference. `frontend/src/lib/pane-size.test.ts` reproduces exactly that: bridge fitted while the dial is in flight, then prove the resize is sent anyway.
 
+### The idle keystroke, and the red line it replaces (2026-11-13)
+
+plan.md 红线 1 said, in the user's own words, that a keepalive must never send
+Enter because it could run a half-typed command. That rule made the program safe
+and also made it useless against the thing the user actually hit: JumpServer
+drops a session on **shell** silence, and `keepalive@openssh.com` never reaches
+the shell, so a session watched by the user was still cut at sixty minutes.
+
+The user replaced the rule with a narrower one, and it is the rule the code now
+follows:
+
+| Line at the prompt | Keystroke | Why it is safe |
+| --- | --- | --- |
+| empty | `\r` | Enter on an empty line prints a fresh prompt; nothing runs. It is the only thing a shell that counts *completed lines* notices. |
+| has unsubmitted text | a space, and nothing else | A space cannot submit a line. It is still input, so `TMOUT` and activity detectors count it. |
+| cursor moved, nothing typed | one right arrow | The shell's own line editor keeps the line; the key changes nothing. |
+| cannot tell (half a sequence) | nothing | Guessing here is how the red line was broken in the first place. |
+
+It ships **off**, with a switch, an interval (default **2 min**) and a "fall
+back to a space" option for someone who cannot tolerate an Enter at all. The
+gates that remain: 5 s of quiet output first, never while a transfer owns the
+stream (红线 4), never counted as the user's own activity (红线 8 — the idle
+window still ends the defence), and a keystroke that cannot be sent postpones
+rather than spins.
+
+Two corrections came out of building it: the connection-level probe's cadence
+is now **2 minutes** too (the user asked for that number), and the fake bastion
+in `internal/sshtest` now counts bytes written *into the session channel* as
+activity — before, it only counted global requests, so "a user-activity policy
+survives on keystrokes" could not be tested at all.
+
 ### Keepalives: staying connected while you think
 
 Every session sends an SSH keepalive every **15 s**: a global
