@@ -68,8 +68,27 @@ func TestTrzszDownloadThroughTheFilter(t *testing.T) {
 	}
 	defer conn.Close()
 
+	// The filter reports transfers to the session, which is what the idle
+	// keystroke stands down for; read that state rather than installing a second
+	// callback (there is one, and the app owns it).
 	states := make(chan bool, 8)
-	conn.filter.SetTransferStateCallback(func(active bool) { states <- active })
+	sessionBusy := func() {
+		last := false
+		deadline := time.Now().Add(25 * time.Second)
+		for time.Now().Before(deadline) {
+			if now := sess.Transferring(); now != last {
+				states <- now
+				last = now
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	go sessionBusy()
+	t.Cleanup(func() {
+		if sess.Transferring() {
+			t.Errorf("the session is still marked busy after the transfer")
+		}
+	})
 
 	// The terminal side must keep reading: the filter draws progress into the
 	// same stream, and an unread pipe would stall the transfer.
@@ -99,6 +118,7 @@ func TestTrzszDownloadThroughTheFilter(t *testing.T) {
 	for time.Now().Before(deadline) {
 		data, err := os.ReadFile(target)
 		if err == nil && bytes.Equal(data, payload) {
+			waitTransferEnd(t, sess)
 			return
 		}
 		time.Sleep(50 * time.Millisecond)

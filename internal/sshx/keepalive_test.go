@@ -49,7 +49,7 @@ func TestKeepAlivePokesUntilItIsStopped(t *testing.T) {
 	stop := make(chan struct{})
 	dead := make(chan string, 1)
 
-	go keepAlive(stop, sender, 10*time.Millisecond, keepAliveStrikes, nil, func(reason string) { dead <- reason })
+	go keepAlive(stop, sender, 10*time.Millisecond, keepAliveStrikes, nil, func(reason string) { dead <- reason }, nil)
 	deadline := time.Now().Add(2 * time.Second)
 	for sender.count() < 3 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
@@ -76,29 +76,61 @@ func TestKeepAlivePokesUntilItIsStopped(t *testing.T) {
 	}
 }
 
-func TestKeepAliveDeclaresTheLinkDeadAfterStrikes(t *testing.T) {
+// A transport error is the connection saying it is gone. One is enough.
+func TestKeepAliveEndsAConnectionWhoseTransportFailed(t *testing.T) {
 	sender := &recordingSender{err: errors.New("use of closed network connection")}
 	stop := make(chan struct{})
 	dead := make(chan string, 1)
 
-	keepAlive(stop, sender, 5*time.Millisecond, keepAliveStrikes, nil, func(reason string) { dead <- reason })
+	keepAlive(stop, sender, 5*time.Millisecond, keepAliveStrikes, nil, func(reason string) { dead <- reason }, nil)
 
 	select {
 	case reason := <-dead:
-		if !strings.Contains(reason, "keepalives") || !strings.Contains(reason, "closed") {
+		if !strings.Contains(reason, "closed") {
 			t.Fatalf("reason = %q", reason)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("a peer that never answers was never noticed")
+		t.Fatal("a dead transport was never noticed")
 	}
-	if got := sender.count(); got != keepAliveStrikes {
-		t.Fatalf("probes = %d, want exactly %d before giving up", got, keepAliveStrikes)
+	if got := sender.count(); got != 1 {
+		t.Fatalf("probes = %d, want 1: the transport already said the connection is gone", got)
+	}
+}
+
+// A server that ignores global requests is not a dead server. JumpServer and
+// several other bastions answer only the requests they implement, and closing a
+// working session over that is how a "keepalive" causes disconnects.
+func TestKeepAliveSurvivesAServerThatNeverAnswers(t *testing.T) {
+	sender := &recordingSender{block: make(chan struct{})}
+	stop := make(chan struct{})
+	defer close(stop)
+	dead := make(chan string, 1)
+	notes := make(chan string, 4)
+
+	go keepAlive(stop, sender, 5*time.Millisecond, keepAliveStrikes, nil,
+		func(reason string) { dead <- reason },
+		func(message string) { notes <- message })
+
+	time.Sleep(20 * keepAliveStrikes * 5 * time.Millisecond)
+	select {
+	case reason := <-dead:
+		t.Fatalf("a server that does not answer global requests closed the session: %s", reason)
+	default:
+	}
+	// It is said once, so the diary explains a connection that later dies.
+	select {
+	case message := <-notes:
+		if !strings.Contains(message, "not answered") {
+			t.Fatalf("note = %q", message)
+		}
+	default:
+		t.Fatal("a run of unanswered probes was not reported")
 	}
 }
 
 func TestKeepAliveCanBeTurnedOff(t *testing.T) {
 	sender := &recordingSender{}
-	keepAlive(make(chan struct{}), sender, 0, keepAliveStrikes, nil, func(string) {})
+	keepAlive(make(chan struct{}), sender, 0, keepAliveStrikes, nil, func(string) {}, nil)
 	if sender.count() != 0 {
 		t.Fatalf("a disabled keepalive sent %d probes", sender.count())
 	}
@@ -185,7 +217,7 @@ func TestKeepAliveParksWhileTheGateIsClosed(t *testing.T) {
 	var open atomic.Bool
 	open.Store(false)
 
-	go keepAlive(stop, sender, 5*time.Millisecond, keepAliveStrikes, open.Load, func(reason string) { dead <- reason })
+	go keepAlive(stop, sender, 5*time.Millisecond, keepAliveStrikes, open.Load, func(reason string) { dead <- reason }, nil)
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) && sender.count() < 5 {
 		time.Sleep(5 * time.Millisecond)
@@ -220,7 +252,7 @@ func TestPausedTicksDoNotCountAsStrikes(t *testing.T) {
 	dead := make(chan string, 1)
 	var open atomic.Bool // starts closed: the user is away
 
-	go keepAlive(stop, sender, 5*time.Millisecond, keepAliveStrikes, open.Load, func(reason string) { dead <- reason })
+	go keepAlive(stop, sender, 5*time.Millisecond, keepAliveStrikes, open.Load, func(reason string) { dead <- reason }, nil)
 
 	// Plenty of ticks while paused; a failing sender behind a closed gate must
 	// neither probe nor die.
@@ -242,4 +274,31 @@ func TestPausedTicksDoNotCountAsStrikes(t *testing.T) {
 		t.Fatal("an always-failing peer was never declared dead once unpaused")
 	}
 	close(stop)
+}
+
+// The whole feature, against a server that behaves like a bastion that ignores
+// global requests: before this, the client's own keepalive closed the session
+// after three unanswered probes — seconds after connecting, with nothing wrong
+// on the far side.
+func TestAServerThatIgnoresKeepalivesDoesNotLoseTheSession(t *testing.T) {
+	srv, err := sshtest.New(sshtest.Options{
+		Password:           "correct horse battery staple",
+		MuteGlobalRequests: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+
+	h := newHarness(t, sshtest.Options{})
+	cfg := h.config()
+	cfg.Host = "127.0.0.1"
+	cfg.Port = srv.Port()
+	cfg.KeepAliveSeconds = 1 // three strikes would land in three seconds
+	sess := h.connect(cfg)
+
+	time.Sleep(8 * time.Second)
+	if info := sess.Info(); info.Status != StatusConnected {
+		t.Fatalf("the client closed a healthy session because its keepalives went unanswered: %+v", info)
+	}
 }

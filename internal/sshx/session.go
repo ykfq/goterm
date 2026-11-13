@@ -226,6 +226,19 @@ func (s *Session) Write(p []byte) error {
 // takes, and it must not leave the idle nudge thinking the user is typing a
 // command. While a transfer runs the nudge also stands down completely: a
 // keystroke inside ZMODEM or trzsz data corrupts it (plan.md red line 4).
+// diary writes one line to the keepalive diary (see diag.go), when there is
+// one. Sessions built by hand in tests have no manager.
+func (s *Session) diary(format string, args ...any) {
+	if s.mgr != nil {
+		s.mgr.diag.note(format, args...)
+	}
+}
+
+// Transferring reports whether a transfer owns the byte stream. It is what the
+// idle keystroke stands down for, so it has to mean "a transfer is running now",
+// not "this session has a transfer filter attached".
+func (s *Session) Transferring() bool { return s.transferring.Load() }
+
 func (s *Session) SetTransferring(on bool) {
 	s.transferring.Store(on)
 	if !on {
@@ -259,6 +272,7 @@ func (s *Session) Close() error {
 // finish is the single exit door: idempotent, closes everything, emits once.
 func (s *Session) finish(reason string) {
 	s.finishOnce.Do(func() {
+		s.diary("%s: closed: %s", s.info.Target, reason)
 		s.setStatus(StatusClosed, reason)
 		// A paused pump must not be left waiting on a session that is gone:
 		// resume it so it drains the last chunks and closes the log file.

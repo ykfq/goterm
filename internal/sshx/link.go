@@ -28,6 +28,11 @@ type connRef struct {
 	closers []io.Closer
 	every   time.Duration
 
+	// mgr and target are for the keepalive diary only: every line it writes is
+	// tagged with the target the connection was opened to.
+	mgr    *Manager
+	target string
+
 	// The ledge. A keepalive defence is not a way to hold a login open for ever,
 	// but "the user has not typed" is the wrong thing to stop on: a bastion —
 	// JumpServer is the one this was written against — watches the *connection*,
@@ -68,8 +73,10 @@ type connRef struct {
 // newConnRef takes ownership of client, bastion and closers, counting one
 // reference for the session that was just opened on them. A positive idle
 // window is enforced by the keepalive from the connection's first probe on.
-func newConnRef(client, bastion *ssh.Client, closers []io.Closer, every, idle time.Duration) *connRef {
+func newConnRef(m *Manager, target string, client, bastion *ssh.Client, closers []io.Closer, every, idle time.Duration) *connRef {
 	l := &connRef{
+		mgr:      m,
+		target:   target,
 		client:   client,
 		bastion:  bastion,
 		closers:  closers,
@@ -278,14 +285,28 @@ func (l *connRef) startKeepAlive() {
 			return
 		}
 		go keepAlive(l.kaStop, l.client, l.every, keepAliveStrikes, l.probeAllowed, func(reason string) {
+			l.note("probe target: dead: " + reason)
 			l.fail("server " + reason)
+		}, func(message string) {
+			l.note("probe target: " + message)
 		})
 		if l.bastion != nil {
 			go keepAlive(l.kaStop, l.bastion, l.every, keepAliveStrikes, l.probeAllowed, func(reason string) {
+				l.note("probe jump host: dead: " + reason)
 				l.fail("jump host " + reason)
+			}, func(message string) {
+				l.note("probe jump host: " + message)
 			})
 		}
 	})
+}
+
+// note writes one line to the keepalive diary, tagged with the connection's
+// target, so a report can say which session it was.
+func (l *connRef) note(message string) {
+	if l.mgr != nil {
+		l.mgr.diag.note("%s: %s", l.target, message)
+	}
 }
 
 // fail is what an unanswered run of keepalives means for a shared connection:

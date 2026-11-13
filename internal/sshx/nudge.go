@@ -216,13 +216,18 @@ func (s *Session) nudgeOnce() bool {
 	if s.transferring.Load() {
 		// A transfer owns the stream; either keystroke would land inside its
 		// data (红线 4).
+		s.diary("%s: keystroke suppressed: a transfer owns the stream", s.info.Target)
 		return false
 	}
-	if state, _ := s.typedLine(); state == "empty" {
+	state, _ := s.typedLine()
+	key := "space"
+	if state == "empty" {
+		key = "enter"
 		_ = s.writeNudge([]byte("\r"))
 	} else {
 		_ = s.writeNudge([]byte(" "))
 	}
+	s.diary("%s: keystroke %s (line=%s)", s.info.Target, key, state)
 	return true
 }
 
@@ -290,9 +295,17 @@ func (s *Session) nudgeOptions() NudgeOptions {
 // above the settings floor is what the user is promised, a window below it is
 // only reachable from a test, and that test brought its own floor.
 func (s *Session) setNudge(opts NudgeOptions) {
+	next := opts.clamped()
 	s.nudgeMu.Lock()
-	s.nudge = opts.clamped()
+	changed := s.nudge != next
+	s.nudge = next
 	s.nudgeMu.Unlock()
+	if changed {
+		// A change applies now, not after whatever window the loop was already
+		// asleep in: switching the keystroke on and waiting a minute for the
+		// first one looks exactly like a switch that does nothing.
+		s.revive()
+	}
 }
 
 // typedState is what the session knows about the line at the prompt.

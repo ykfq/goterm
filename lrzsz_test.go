@@ -107,6 +107,7 @@ func TestLrzszUpload(t *testing.T) {
 	for time.Now().Before(deadline) {
 		got, err := os.ReadFile(target)
 		if err == nil && bytes.Equal(got, payload) {
+			waitTransferEnd(t, sess)
 			return
 		}
 		if time.Since(lastReport) > 2*time.Second {
@@ -147,6 +148,7 @@ func TestLrzszDownload(t *testing.T) {
 	for time.Now().Before(deadline) {
 		got, err := os.ReadFile(target)
 		if err == nil && bytes.Equal(got, payload) {
+			waitTransferEnd(t, sess)
 			return
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -283,4 +285,19 @@ func plainOf(b *syncBuffer) string {
 		s = s[len(s)-600:]
 	}
 	return s
+}
+
+// A finished transfer must hand the stream back. While it holds it the idle
+// keystroke stands down, so a flag left set is a session that can never be kept
+// alive again — which is exactly what happened when it was set once, at connect.
+func waitTransferEnd(t *testing.T, sess *sshx.Session) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !sess.Transferring() {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("the session is still marked busy after the transfer ended")
 }

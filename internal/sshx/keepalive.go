@@ -3,6 +3,7 @@ package sshx
 import (
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"time"
 )
 
@@ -56,46 +57,64 @@ type probeSender interface {
 	SendRequest(name string, wantReply bool, payload []byte) (bool, []byte, error)
 }
 
-// keepAlive pokes sender every `every` until stop closes or `strikes` probes in
-// a row go unanswered; then it calls dead once and returns.
+// keepAlive pokes sender every `every` until stop closes, the transport errors,
+// or a probe goes unanswered `strikes` times in a row.
+//
+// A timeout is not a death certificate. Several SSH servers — bastions included
+// — simply do not answer global requests they do not implement, and closing a
+// healthy session because of that is the opposite of what a keepalive is for.
+// So a run of unanswered probes is reported once (note) and then ignored; only
+// an error from the transport itself, or the kernel's own TCP keepalive, ends
+// the connection.
 //
 // gate, when non-nil, decides whether a tick may probe at all. A closed gate
 // parks the loop for that tick and resets the strike count: a connection that
 // has been idle for hours is not "flaky", and the first probe after the user
 // comes back must not be judged by failures from before the pause.
-func keepAlive(stop <-chan struct{}, sender probeSender, every time.Duration, strikes int, gate func() bool, dead func(reason string)) {
+func keepAlive(stop <-chan struct{}, sender probeSender, every time.Duration, strikes int, gate func() bool, dead func(reason string), note func(message string)) {
 	if sender == nil || every <= 0 || strikes <= 0 {
 		return
 	}
 	ticker := time.NewTicker(every)
 	defer ticker.Stop()
 
-	failures := 0
+	timeouts := 0
+	var inFlight atomic.Bool
 	for {
 		select {
 		case <-stop:
 			return
 		case <-ticker.C:
 			if gate != nil && !gate() {
-				failures = 0
+				timeouts = 0
 				continue
 			}
 			within := every
 			if within > probeReplyWithin {
 				within = probeReplyWithin
 			}
-			if err := probe(sender, within); err != nil {
-				failures++
-				if failures >= strikes {
-					dead(fmt.Sprintf("%d keepalives in a row were not answered (%v)", failures, err))
-					return
+			err := probeLimited(sender, within, &inFlight)
+			if err == nil {
+				timeouts = 0
+				continue
+			}
+			if errors.Is(err, errNoReply) {
+				timeouts++
+				if timeouts == strikes && note != nil {
+					note(fmt.Sprintf("the server has not answered %d keepalives in a row; the connection may be gone, but it is not closed on that alone", timeouts))
 				}
 				continue
 			}
-			failures = 0
+			// The transport itself failed: this is a dead connection.
+			dead(fmt.Sprintf("%d keepalives in a row failed (%v)", timeouts+1, err))
+			return
 		}
 	}
 }
+
+// errNoReply is a probe that was not answered in time, which says nothing about
+// whether the connection is alive.
+var errNoReply = errors.New("no reply")
 
 // probe sends one request and waits at most `within` for its reply.
 //
@@ -103,9 +122,23 @@ func keepAlive(stop <-chan struct{}, sender probeSender, every time.Duration, st
 // socket (a wifi drop, a suspended laptop) never answers and never errors, so
 // a bare SendRequest would block forever and the loop would never notice.
 func probe(sender probeSender, within time.Duration) error {
+	return probeLimited(sender, within, nil)
+}
+
+// probeLimited is probe with at most one request outstanding. A server that
+// never answers leaves the request blocked until the connection ends, and one
+// such goroutine per unanswered probe would be a slow leak on exactly the
+// connections that stay up the longest.
+func probeLimited(sender probeSender, within time.Duration, inFlight *atomic.Bool) error {
+	if inFlight != nil && !inFlight.CompareAndSwap(false, true) {
+		return fmt.Errorf("%w within %s (the last one is still waiting)", errNoReply, within)
+	}
 	done := make(chan error, 1)
 	go func() {
 		_, _, err := sender.SendRequest(keepAliveRequest, true, nil)
+		if inFlight != nil {
+			inFlight.Store(false)
+		}
 		done <- err
 	}()
 	timer := time.NewTimer(within)
@@ -115,6 +148,6 @@ func probe(sender probeSender, within time.Duration) error {
 	case err := <-done:
 		return err
 	case <-timer.C:
-		return errors.New("no reply within " + within.String())
+		return fmt.Errorf("%w within %s", errNoReply, within)
 	}
 }

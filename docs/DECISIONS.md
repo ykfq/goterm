@@ -588,6 +588,49 @@ reason — and the toast carries a **Turn on** button that enables anti-idle
 (3 min, whichever nudge is configured — the space by default) right there,
 instead of leaving the user to guess why a playback of "auto logout" ended the tab.
 
+### Why the keystroke really never went out (2026-11-13, round five)
+
+Three defects, all in the production path, none of them visible in the tests
+that covered the keystroke. The tests built sessions directly; the app builds a
+tab.
+
+**1. Every tab was permanently "in a transfer".** `startTerminal` wraps every
+session in a `transferConn` — a filter that lives for the whole tab and only
+*carries* transfers between them — and creating it called
+`SetTransferring(true)`. Nothing ever set it back. The idle keystroke stands
+down while a transfer owns the stream (红线 4), so on a real tab it never went
+out at all, while `internal/sshx`'s tests, which have no filter, stayed green.
+The flag now follows the truth: `trzsz`'s own `SetTransferStateCallback`, and
+the ZMODEM peer when it takes the stream. Pinned by
+`TestATransferFilterAloneDoesNotMarkTheSessionBusy` (fails on the old code) and,
+end to end on a tab built the way the app builds one,
+`TestATabWithATransferFilterGetsTheIdleKeystroke`. A finished transfer must hand
+the stream back — `TestLrzszUpload`/`TestLrzszDownload` now assert it.
+
+**2. Our own keepalive hung up live sessions.** Three unanswered
+`keepalive@openssh.com` probes in a row closed every session on the connection
+("connection lost: server 3 keepalives in a row were not answered"). A bastion is
+free to ignore global requests it does not implement, and several do — the
+silence says nothing about whether the connection works. Timeouts are now
+counted, reported once into the diary, and otherwise ignored; only a transport
+error, or the kernel's own TCP keepalive, ends the connection. A server that
+never answers holds at most one outstanding request (a mute server would
+otherwise leak a blocked goroutine per probe). Pinned by
+`TestAServerThatIgnoresKeepalivesDoesNotLoseTheSession` against a server that
+never replies (fails on the old code, in 3 seconds with a 1 s cadence).
+
+**3. Losing focus counted as "the user is gone".** `SetDetached` was set from
+`!IsFocused() || IsMinimized()`, and once the idle window passed, that stopped
+the probes *and* the keystrokes. A terminal sits behind the editor you are
+working in all day; being unfocused is not absence, and treating it as such is
+why a JumpServer session died at the hour mark. Only minimising counts now.
+
+**And a diary, so the sixth round is not another guess.** `logs/keepalive.log`
+(1 MB, then started over) records what each session was told at connect, every
+keystroke that went out, every keystroke suppressed and why, every probe that
+went unanswered, and how the session ended. `TestTheDiarySaysWhatWasConfiguredAndWhatWentOut`
+pins the first three.
+
 ### A paste is one CR per line, and the cursor is a bar (2026-11-13)
 
 **Every pasted line arrived with a blank line after it.** The clipboard on

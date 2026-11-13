@@ -140,7 +140,13 @@ func newTransferConn(s *sshx.Session, enc encode.Name, chooser Chooser) (*transf
 	if err != nil {
 		return nil, err
 	}
-	s.SetTransferring(true)
+	// The session is *not* in a transfer here: this connection lives for the
+	// whole session and only carries transfers between them. Marking it now —
+	// which is what this used to do — turns the idle keystroke off for the rest
+	// of the tab's life, silently, and that is a session that gets logged out
+	// with the feature apparently on. The flag is set from the two places that
+	// actually know a transfer is running: trzsz's own callback, and the lrzsz
+	// peer when it takes the stream.
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
 	c := &transferConn{
@@ -189,6 +195,9 @@ func newTransferConn(s *sshx.Session, enc encode.Name, chooser Chooser) (*transf
 	// lrzsz in Go instead.
 	c.filter = trzsz.NewTrzszFilter(inR, outW, sessionIn{s}, raw, trzsz.TrzszOptions{
 		TerminalColumns: 100,
+	})
+	c.filter.SetTransferStateCallback(func(transferring bool) {
+		s.SetTransferring(transferring)
 	})
 	flt = c.filter
 	close(filterReady)
@@ -451,6 +460,7 @@ func (p *lrzszPeer) feed(chunk []byte) bool {
 	p.active = true
 	p.signal()
 	p.mu.Unlock()
+	p.c.sess.SetTransferring(true)
 	go p.run(joined[at:])
 	return true
 }
@@ -467,6 +477,7 @@ func (p *lrzszPeer) run(header []byte) {
 		p.done = make(chan struct{})
 		p.signal()
 		p.mu.Unlock()
+		p.c.sess.SetTransferring(false)
 		close(done)
 		// The pump was told to resume by clearing active above.
 	}()

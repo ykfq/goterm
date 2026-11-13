@@ -76,3 +76,45 @@ func TestConnectingDoesNotOpenADialog(t *testing.T) {
 		t.Fatalf("connect asked for the silent default %d times, want 1", chooser.defaults)
 	}
 }
+
+// The idle keystroke stands down while a transfer owns the stream, and a tab
+// carries a transfer filter for its whole life. Marking the session busy when
+// the filter is attached — which is what happened — turned the keystroke off
+// for ever on every real session, while every test of the keystroke, which
+// builds a session without a filter, kept passing.
+func TestATransferFilterAloneDoesNotMarkTheSessionBusy(t *testing.T) {
+	srv, err := sshtest.New(sshtest.Options{User: "u", Password: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Close()
+	host, portStr, err := net.SplitHostPort(srv.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	app, err := NewApp()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.Close()
+	sess, err := app.mgr.Connect(sshx.Config{Host: host, Port: port, User: "u", Password: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sess.Close()
+
+	conn, err := newTransferConn(sess, encode.UTF8, &countingChooser{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	if sess.Transferring() {
+		t.Fatal("attaching the transfer filter marked the session busy; its idle keystrokes would never be sent")
+	}
+}

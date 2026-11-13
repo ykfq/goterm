@@ -154,6 +154,13 @@ type Options struct {
 	// watches. Zero means no such policy, which is every other test.
 	HangUpAfterSilence time.Duration
 
+	// MuteGlobalRequests makes the server ignore global requests instead of
+	// answering them. Some bastions do exactly that — they implement the
+	// requests they know and never reply to the rest — and a client that reads
+	// "no reply" as "the connection is dead" hangs up on a server that is
+	// perfectly healthy.
+	MuteGlobalRequests bool
+
 	Logger *log.Logger
 }
 
@@ -174,6 +181,7 @@ type Server struct {
 	// allowForwarding enables "direct-tcpip" channels, which is what makes
 	// this server usable as a jump host.
 	allowForwarding bool
+	muteGlobal      bool
 
 	// sftpRoot is where the sftp subsystem starts (WithServerWorkingDirectory).
 	// It is a scratch directory unless Options.SFTPRoot named one.
@@ -264,7 +272,7 @@ func NewOn(addr string, opts Options) (*Server, error) {
 	}
 
 	s := &Server{listener: ln, cfg: cfg, hostKey: hostKey, shell: opts.Shell, logger: logger,
-		allowForwarding: opts.AllowForwarding, done: make(chan struct{})}
+		allowForwarding: opts.AllowForwarding, muteGlobal: opts.MuteGlobalRequests, done: make(chan struct{})}
 	s.quiet.Store(time.Now().UnixNano())
 	s.sftpRoot = opts.SFTPRoot
 	if s.sftpRoot == "" {
@@ -505,7 +513,7 @@ func (s *Server) handleConn(transport net.Conn) {
 	go func() {
 		for req := range reqs {
 			s.alive()
-			if req.WantReply {
+			if req.WantReply && !s.muteGlobal {
 				_ = req.Reply(false, nil)
 			}
 		}

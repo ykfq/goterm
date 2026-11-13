@@ -97,8 +97,13 @@ type Manager struct {
 	away atomic.Bool
 
 	// nudge is the idle keystroke setting, applied to every session — open now
-	// and opened later. Zero value is "off", which is the shipped default.
+	// and opened later. Zero value is "off", which the app never sets: the
+	// setting ships on.
 	nudge atomic.Pointer[NudgeOptions]
+
+	// diag is the keepalive diary: what was configured, what was sent, what was
+	// suppressed, and how it ended. See diag.go.
+	diag diagLog
 
 	// Session logging. logMu also guards the snapshot of the session map that
 	// ConfigureSessionLogging needs, because a change applies to the sessions
@@ -159,6 +164,10 @@ func NewManager(hostKeys *HostKeyStore) *Manager {
 // longer than the new window stops probing keepalives at its next tick. The
 // change is applied in place: an active session keeps its own clock, it is only
 // the threshold that moves.
+
+// SetDiag points the keepalive diary (see diag.go) at a writer. Nil turns it
+// off; the app passes an appended file in the log directory.
+func (m *Manager) SetDiag(w io.Writer) { m.diag.set(w) }
 
 // Nudge reports what the idle keystroke is set to, which is what a test — or a
 // status line — needs to tell "configured" from "assumed".
@@ -306,7 +315,7 @@ func (m *Manager) Connect(cfg Config) (*Session, error) {
 		closers = append(closers, bastion)
 	}
 
-	link := newConnRef(conn, bastion, closers, cfg.KeepAliveInterval(), m.IdleTimeout())
+	link := newConnRef(m, cfg.Address(), conn, bastion, closers, cfg.KeepAliveInterval(), m.IdleTimeout())
 	link.setDetached(m.away.Load())
 	s := m.register(link, cfg, sh, fingerprint, started)
 
@@ -439,6 +448,13 @@ func (m *Manager) register(link *connRef, cfg Config, sh *shellPipes, fingerprin
 	}
 	s.connectedAt.Store(started.UnixNano())
 	link.track(s)
+	// One line per session, so a report says what the app thought it was told.
+	if opts := m.nudge.Load(); opts != nil {
+		m.diag.note("%s: connect via=%q nudge=%v every=%s keepalive=%s idle-stop=%s",
+			cfg.Address(), via(cfg), opts.On, opts.clamped().interval(), link.every, m.IdleTimeout())
+	} else {
+		m.diag.note("%s: connect via=%q nudge=never-configured keepalive=%s", cfg.Address(), via(cfg), link.every)
+	}
 	m.remember(s)
 	m.openLogFor(s)
 

@@ -88,6 +88,8 @@ type App struct {
 	// is kept, so showing it again restores what the user chose.
 	sidebarHidden bool
 
+	// diary is the keepalive log file, when it could be opened (see openDiary).
+	diary *os.File
 	// markSrc is the window's title-bar icon, decoded once from the embedded
 	// artwork.
 	markSrc ui.ImageSource
@@ -296,15 +298,21 @@ func (a *App) Open() {
 		log.Printf("goterm: window icon: %v", err)
 	}
 	a.installMenu()
+	a.openDiary()
 	a.win.OnClosed(func() { a.Close() })
 
 	// Keepalive defends whatever is on screen. A bastion hangs up a connection
 	// that has sent nothing for long enough whatever the user is doing with the
 	// keyboard, so a quiet-but-visible window must keep probing; only a window
-	// nobody can see is allowed to fall silent (see sshx.SetDetached). Minimising
-	// does not always blur the window on every platform, so both signals count.
+	// nobody can see is allowed to fall silent (see sshx.SetDetached).
+	//
+	// Losing focus is not "nobody can see it": a terminal sits behind the editor
+	// you are working in, or on the second monitor, all day. Counting a blur as
+	// absence used to stop the probes — and the idle keystreaks — after the idle
+	// window, which is why a JumpServer session went away at the hour mark. The
+	// window being minimised is the signal; focus is not.
 	syncAway := func() {
-		a.mgr.SetDetached(!a.win.IsFocused() || a.win.IsMinimized())
+		a.mgr.SetDetached(a.win.IsMinimized())
 	}
 	a.win.OnFocus(syncAway)
 	a.win.OnBlur(syncAway)
@@ -320,7 +328,33 @@ func (a *App) Open() {
 }
 
 // Close releases every session and persists what changed.
+// openDiary starts the keepalive diary: one small file that says what the app
+// was told, what it sent, and how each session ended. Without it every "it still
+// disconnects" report is answered by reading code, which is how this feature
+// took four rounds.
+func (a *App) openDiary() {
+	if a.logDir == "" {
+		return
+	}
+	path := filepath.Join(a.logDir, "keepalive.log")
+	if st, err := os.Stat(path); err == nil && st.Size() > 1<<20 {
+		_ = os.Remove(path) // 1 MB of history is plenty; start over
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		log.Printf("goterm: keepalive diary: %v", err)
+		return
+	}
+	a.diary = f
+	a.mgr.SetDiag(f)
+}
+
 func (a *App) Close() {
+	if a.diary != nil {
+		// Left open on purpose: closing the sessions writes their last lines,
+		// and the process exit closes the file anyway.
+		_ = a.diary.Sync()
+	}
 	if a.mgr != nil {
 		// CloseAll ends every session, which announces itself to the window;
 		// doing that on its own goroutine keeps quit from waiting on a frame.
