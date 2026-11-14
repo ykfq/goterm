@@ -21,11 +21,11 @@ import (
 //
 //   - Line empty: a carriage return. It is what a user's Enter does on an
 //     empty line — the shell answers with a fresh prompt and nothing runs.
-//   - Anything else on the line: a space and then a backspace. Two keystrokes
-//     that cancel each other, so the line the user walked away from is exactly
-//     as they left it — no stray space to land in front of the next word —
-//     while the far side still counts them as typed input, which is the whole
-//     point.
+//   - Anything else on the line: a single space. It cannot submit a line, and
+//     it is typed input, which is what `TMOUT` and an activity detector count.
+//     It does leave one space on the line; a space followed by a backspace was
+//     tried and did not reset the timer on the user's hosts, so the plain space
+//     is what ships.
 //
 // "Anything else" deliberately swallows the cases the old code used to refuse:
 // a half-typed command (a space is safe), a line recalled from history with an
@@ -217,16 +217,15 @@ func (s *Session) nudgeOnce() bool {
 		return false
 	}
 	state, _ := s.typedLine()
-	key := "space+backspace"
+	key := "space"
 	if state == "empty" {
 		key = "enter"
 		_ = s.writeNudge([]byte("\r"))
 	} else {
-		// Space, then the erase key. The two cancel on any line editor that
-		// understands Backspace, so nothing the user typed changes; a line
-		// editor that does not still keeps the two bytes as input, which is all
-		// the shell's timer needs.
-		_ = s.writeNudge([]byte(" \x7f"))
+		// One space, and nothing else: it cannot submit a line, and it is input
+		// the far side counts. It leaves the space on the line — that is the
+		// price of the one keystroke that works everywhere.
+		_ = s.writeNudge([]byte(" "))
 	}
 	s.diary("%s: keystroke %s (line=%s)", s.info.Target, key, state)
 	return true

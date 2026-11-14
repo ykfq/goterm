@@ -368,7 +368,7 @@ follows:
 | Line at the prompt | Keystroke | Why it is safe |
 | --- | --- | --- |
 | empty | `\r` | Enter on an empty line prints a fresh prompt; nothing runs. It is the only thing a shell that counts *completed lines* notices. |
-| anything else on it | a space, then a backspace | The two cancel on any line editor, so the line is exactly what the user walked away from — no stray space in front of the next word — and the far side still counts two bytes of typed input, which is what `TMOUT` and an activity detector see. "Anything else" is text the user has not submitted, a line recalled from history with an arrow key, or an escape sequence still half-typed. |
+| anything else on it | one space | A space cannot submit a line and is typed input, which is what `TMOUT` and an activity detector count. It does leave the space on the line. A space followed by a backspace (which would leave the line untouched) was shipped first and **did not reset the timer on the hosts this was reported from** — only the empty-line Enter did — so the plain space is what ships. "Anything else" is text the user has not submitted, a line recalled from history with an arrow key, or an escape sequence still half-typed. |
 
 That table is now the whole rule, and the user asked for it in exactly those
 words after two rounds of gates that each had a way to silence it: **every

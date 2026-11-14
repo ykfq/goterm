@@ -106,11 +106,12 @@ func TestNudgeEntersOnAnEmptyLine(t *testing.T) {
 	}
 }
 
-// A half-typed command gets a space and a backspace: two keystrokes that cancel,
-// so the line is exactly what the user walked away from — no stray space to land
-// in front of the next word — and the shell still counts two bytes of input.
+// A half-typed command gets one space: it cannot submit the line, and it is
+// typed input, which is what a shell's TMOUT and a bastion's activity detector
+// count. (A space followed by a backspace was tried first; it did not reset the
+// timer on the hosts this was reported from, so the plain space ships.)
 // The shell records the wire bytes, so this is about what it actually received.
-func TestNudgeSpaceAndBackspaceWhenACommandIsHalfTyped(t *testing.T) {
+func TestNudgeSpaceWhenACommandIsHalfTyped(t *testing.T) {
 	var mu sync.Mutex
 	var received []byte
 	h := newHarness(t, sshtest.Options{
@@ -144,16 +145,17 @@ func TestNudgeSpaceAndBackspaceWhenACommandIsHalfTyped(t *testing.T) {
 		defer mu.Unlock()
 		return string(received)
 	}
-	if !waitFor(t, 4*nudgeAfter, func() bool { return strings.Contains(got(), " \x7f") }) {
-		t.Fatalf("no space-and-backspace arrived at the half-typed line: %q", got())
+	if !waitFor(t, 4*nudgeAfter, func() bool { return strings.Contains(got(), "echo NEVER-RUNS ") }) {
+		t.Fatalf("no space arrived at the half-typed line: %q", got())
 	}
-	// The pair, in that order, with nothing between them.
-	if !strings.HasSuffix(strings.TrimRight(got(), " \x7f"), "echo NEVER-RUNS") {
-		t.Fatalf("the line was changed rather than nudge-and-erased: %q", got())
+	// One space per window, and nothing else: no erase key, no Enter.
+	time.Sleep(nudgeAfter / 2)
+	wire := got()
+	if strings.ContainsAny(wire, "\r\n\x7f\x08") {
+		t.Fatalf("the nudge sent more than a space: %q", wire)
 	}
-	// And never an Enter: that would have run it.
-	if strings.Contains(got(), "\r") || strings.Contains(got(), "\n") {
-		t.Fatalf("the half-typed command was submitted: %q", got())
+	if strings.Count(wire, "echo NEVER-RUNS") != 1 {
+		t.Fatalf("the line was rewritten rather than nudged: %q", wire)
 	}
 }
 
@@ -435,8 +437,8 @@ func TestNudgeSurvivesALoneEscape(t *testing.T) {
 	if !waitFor(t, 4*nudgeAfter, func() bool { return len(*trace) > 0 }) {
 		t.Fatalf("a session holding a lone ESC was never nudged again")
 	}
-	if got := (*trace)[0]; got != "\" \\x7f\"" {
-		t.Fatalf("the keystroke was %s, want a space and a backspace: an Enter there could submit something", got)
+	if got := (*trace)[0]; got != "\" \"" {
+		t.Fatalf("the keystroke was %s, want a single space: an Enter there could submit something", got)
 	}
 }
 
