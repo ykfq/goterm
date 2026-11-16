@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/egoist/mygo/ui"
+)
 
 func TestMoveTabReordersAndKeepsTheSameTabActive(t *testing.T) {
 	app := &App{
@@ -48,5 +52,39 @@ func TestMoveTabStopsDragTracking(t *testing.T) {
 	}
 	if app.active != 1 {
 		t.Fatalf("active index %d, want 1", app.active)
+	}
+}
+
+// The tab you are looking at has to look like the one you are looking at. The
+// strip and the selected chip used to share one colour, so every tab looked
+// identical and a click changed nothing visible — which also made a drag-reorder
+// impossible to follow.
+func TestTheSelectedTabLooksDifferentFromTheOthers(t *testing.T) {
+	for _, th := range []*ui.Theme{ui.LightTheme(), ui.DarkTheme()} {
+		activeBG, activeFG, activeBold := tabLook(th, true, false, false)
+		plainBG, plainFG, plainBold := tabLook(th, false, false, false)
+
+		if activeBG == th.Surface {
+			t.Errorf("dark=%v: the selected tab is painted the strip's own colour", th.Dark)
+		}
+		if activeBG == plainBG {
+			t.Errorf("dark=%v: the selected tab and the others share a background", th.Dark)
+		}
+		if activeFG == plainFG {
+			t.Errorf("dark=%v: the selected tab's text is the same colour as the others'", th.Dark)
+		}
+		if !activeBold || plainBold {
+			t.Errorf("dark=%v: bold = %v/%v, want the selected tab bold and the others not", th.Dark, activeBold, plainBold)
+		}
+		// Hovering an unselected tab must not make it look selected.
+		hoverBG, _, _ := tabLook(th, false, false, true)
+		if hoverBG == activeBG {
+			t.Errorf("dark=%v: a hovered tab looks like the selected one", th.Dark)
+		}
+		// The tab being dragged is findable, and distinct from both.
+		dragBG, _, _ := tabLook(th, false, true, false)
+		if dragBG == activeBG || dragBG == hoverBG || dragBG == plainBG {
+			t.Errorf("dark=%v: the dragged tab is not distinguishable (%v)", th.Dark, dragBG)
+		}
 	}
 }

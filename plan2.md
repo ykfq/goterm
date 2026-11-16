@@ -219,7 +219,8 @@
 | 连接引用计数 / 最后标签才关 | `internal/sshx/link.go` 不变 | ✅ |
 | Reconnect | 关终端 → 用原 Config 重连 | 🚧 |
 | ad-hoc 会话 Reconnect 置灰 | 无 hostID 时禁用菜单项 | 🚧 |
-| 拖拽调整标签顺序 | 自定义标签栏 + `Dragged()` 换位 | 🚧 |
+| 拖拽调整标签顺序 | 自定义标签栏 + `Dragged()` 换位 | ✅ |
+| 标签的选中态 | 条带是 `Surface`，选中的标签填 `Background`（=终端底色）+ 加粗 + 正文色，其余透明 + 灰字；悬停 `SurfaceHover`、拖动中 `SurfacePressed`。以前选中和未选中都是 `Surface`，全是同一个颜色，点一下看不出来 | ✅ |
 | **大输出内存涨到 1G** | 终端滚动回看有字节上限；Conn 队列 4MB 满即停读 SSH（TCP 背压） | 🚧 |
 | 滚动回看可设 | 改为 **MB**（默认 8 MB，1–64），因为 Ghostty 按字节计 | 🚧 |
 | 断线后 `session is closed` 刷屏 | 状态栏/标签状态单一载体，不往终端写 | 🚧 |

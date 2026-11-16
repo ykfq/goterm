@@ -353,10 +353,12 @@ func (a *App) mark() ui.ImageSource {
 func (a *App) tabChip(c *ui.Context, i int, t *Tab) {
 	chip := ui.Row(c.Key(t.ID)).Height(26).Padding(0, 8).Gap(6).Radius(6).Focusable().Label("Tab " + tabTitle(t))
 	active := i == a.active
-	if active {
-		chip.Background(c.Theme().Surface)
-	} else if chip.Hovered() {
-		chip.Background(c.Theme().SurfaceHover)
+	// The strip is the chrome colour (Surface); the tab you are looking at is
+	// painted the window's own Background, so it reads as a hole cut into the
+	// chrome and joined to the terminal below it.
+	bg, fg, bold := tabLook(c.Theme(), active, a.dragFrom == i, chip.Hovered())
+	if bg != ui.Transparent {
+		chip.Background(bg)
 	}
 	chip.Children(func() {
 		status := c.Theme().Success
@@ -376,7 +378,10 @@ func (a *App) tabChip(c *ui.Context, i int, t *Tab) {
 			level := pulseLevel(time.Now())
 			dot.Background(mixColor(status, c.Theme().Accent, level))
 		}
-		ui.Text(c, tabTitle(t)).MaxLines(1).FontSize(12)
+		title := ui.Text(c, tabTitle(t)).MaxLines(1).FontSize(12).TextColor(fg)
+		if bold {
+			title.Bold()
+		}
 		ui.Button(c, "✕").Label("Close "+tabTitle(t)).FontSize(9).BorderWidth(0).
 			Background(ui.Transparent).Padding(2, 4).Tooltip("Close tab").
 			OnClick(func() { a.post(func() { a.closeTab(indexOfTab(a.tabs, t)) }) })
@@ -428,6 +433,29 @@ func (a *App) tabChip(c *ui.Context, i int, t *Tab) {
 			a.post(func() { a.closeTab(indexOfTab(a.tabs, t)) })
 		}
 	})
+}
+
+// tabLook is how a tab chip is painted, in one place so a test can hold it to
+// its promise: the tab being looked at must not look like the ones that are not.
+//
+// The strip behind the chips is the theme's Surface. The selected chip takes the
+// window's Background — the colour of the terminal it belongs to — and the
+// others stay transparent with muted text, so the selection is a difference in
+// fill *and* in type. Before this, the selected chip was also Surface: every tab
+// looked alike, and clicking one changed nothing you could see.
+func tabLook(th *ui.Theme, active, dragging, hovered bool) (bg, fg ui.Color, bold bool) {
+	switch {
+	case active:
+		return th.Background, th.Text, true
+	case dragging:
+		// The tab under the pointer while it is being dragged has to be findable
+		// among its neighbours, or a reorder is guesswork.
+		return th.SurfacePressed, th.TextMuted, false
+	case hovered:
+		return th.SurfaceHover, th.TextMuted, false
+	default:
+		return ui.Transparent, th.TextMuted, false
+	}
 }
 
 func tabTitle(t *Tab) string {
