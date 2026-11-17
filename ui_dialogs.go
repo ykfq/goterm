@@ -492,6 +492,7 @@ func (a *App) pasteDialog(c *ui.Context) {
 		return
 	}
 	p := a.pasteAsk
+	wasOpen := p.Open
 	open := p.Open
 	ui.Modal(c, &open, func() {
 		ui.Column(c).Width(640).Gap(12).Children(func() {
@@ -523,9 +524,21 @@ func (a *App) pasteDialog(c *ui.Context) {
 			})
 		})
 	})
-	p.Open = open
-	if !open && a.pasteAsk == p {
-		a.pasteAsk = nil
+	// Two ways to close it: the buttons set the ask's own flag, Escape or a
+	// click outside sets the modal's. Either one means the dialog is gone, and
+	// the keyboard it was holding goes back to the terminal — otherwise the
+	// window looks alive, the mouse works, and every key typed goes nowhere
+	// until the terminal is clicked awake again.
+	if !open {
+		p.Open = false
+	}
+	if wasOpen && !p.Open {
+		if a.pasteAsk == p {
+			a.pasteAsk = nil
+		}
+		if p.Restore != nil {
+			p.Restore()
+		}
 	}
 }
 

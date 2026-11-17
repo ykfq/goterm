@@ -53,6 +53,11 @@ type PasteAsk struct {
 	// trailing blank line is not cosmetic: the shell runs it as a command.
 	TrimEnd bool
 	Run     func(text string)
+	// Restore runs when the dialog closes, by any route — Paste, Cancel, Escape.
+	// The button held the keyboard, and a closed dialog takes it with it: without
+	// this the window keeps the mouse but answers no key, and the user has to
+	// click the terminal awake again.
+	Restore func()
 }
 
 func (a *App) askSecret(t *Tab, kind promptKind, proxy bool) {

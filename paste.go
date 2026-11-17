@@ -129,6 +129,9 @@ func (a *App) pasteText(t *Tab, d transfer.Data) bool {
 				t.Term.Paste(text)
 			}
 		},
+		Restore: func() {
+			t.Focus.Focus()
+		},
 	}
 	if a.win != nil {
 		a.win.Invalidate()

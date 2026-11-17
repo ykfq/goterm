@@ -241,3 +241,50 @@ func TestCollapsedSidebarKeepsChromeAtTheEdges(t *testing.T) {
 		}
 	}
 }
+
+// The dialog's button holds the keyboard (that is what makes Enter the paste).
+// When it closes, the keyboard has to go back to the terminal — otherwise the
+// window looks alive, the mouse works, and every key you type goes nowhere until
+// you click the terminal awake again.
+func TestClosingThePasteDialogGivesTheKeyboardBack(t *testing.T) {
+	routes := []struct {
+		name  string
+		close func(tt *ui.Tester) error
+	}{
+		{"paste on Enter", func(tt *ui.Tester) error { tt.KeyDown(ui.KeyEnter); return nil }},
+		{"cancel", func(tt *ui.Tester) error { return tt.Click("Cancel") }},
+		{"escape", func(tt *ui.Tester) error { tt.KeyDown(ui.KeyEscape); return nil }},
+	}
+	for _, r := range routes {
+		t.Run(r.name, func(t *testing.T) {
+			app, err := NewApp()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer app.Close()
+
+			restored := 0
+			app.pasteAsk = &PasteAsk{
+				Open:    true,
+				Text:    "make deploy\nssh host",
+				TrimEnd: true,
+				Run:     func(string) {},
+				Restore: func() { restored++ },
+			}
+
+			tt := ui.NewTester(app.view, 1100, 760)
+			tt.Frame()
+			if err := r.close(tt); err != nil {
+				t.Fatalf("could not drive the dialog: %v", err)
+			}
+			tt.Frame()
+
+			if restored != 1 {
+				t.Fatalf("the terminal got the keyboard back %d times, want once", restored)
+			}
+			if app.pasteAsk != nil {
+				t.Fatal("the dialog is still up after it was closed")
+			}
+		})
+	}
+}
