@@ -639,30 +639,37 @@ out of `vim` as `cms 全部迁移任务执行完成` → `cms \uFFFD~E\uFFFD\uFF
 
 `cat` copies bytes, so it says nothing about the remote locale — and the `~E`,
 `~C`, `~A` are the tell: that is **vim**'s notation for unprintable *bytes*, and
-those bytes are the 0x80–0x9F continuation bytes of the UTF-8 sequences
-(0x85 → `~E`, 0x83 → `~C`, 0x81 → `~A`). vim is not in multibyte mode: its
-`'encoding'` fell back to latin1 because the session has no UTF-8 locale. The
-bytes the file has are never touched; vim is deciding what to draw.
+they are the 0x80–0x9F continuation bytes of the UTF-8 sequences (0x85 → `~E`,
+0x83 → `~C`, 0x81 → `~A`). vim is not in multibyte mode.
 
-Two things were checked before changing anything:
+The first answer here was "the host has no UTF-8 locale", and it was wrong.
+The user's counter-example settled it: **MobaXterm on the same host shows the
+same file perfectly**, and MobaXterm sends no locale at all. The host's own
+locale is fine; we were the ones breaking it.
 
-- **Our side is byte-exact.** A vim-shaped screen fed through
-  `encode.Reader` + `highlight.NewReader` one byte per `Read` comes out
-  identical (`TestASplitChineseLineReachesTheTerminalByteForByte`), and a
-  decorated plain line loses no character (`TestHighlightingNeverBreaksACharacter`).
-  So the split is not ours.
-- **The locale was already being asked for** (`LANG`, default `C.UTF-8`) but the
-  result was thrown away — a server that refuses env requests (`AcceptEnv`) left
-  the session in C and nobody could tell.
+**The bug was ours, and it was a default.** GoTerm sent `LANG=C.UTF-8` on every
+connection. `setlocale(LC_ALL, "")` does not fall back to the host's configured
+locale when the value in the environment does not exist — it fails and leaves
+the process in C. So on a host without `C.UTF-8` (RHEL/CentOS 8 and older have
+no such locale), our client put the session in C while `sshd`'s own environment
+would have had a good UTF-8 one. vim then drew UTF-8 as latin1. `cat` was
+unaffected because it never asks the locale anything.
 
-Now the locale is chosen the way ssh chooses it: a local UTF-8 `LC_ALL` /
-`LC_CTYPE` / `LANG` is forwarded, a non-UTF-8 local one is not (the terminal is
-UTF-8-only), and `C.UTF-8` is the fallback. Whether the server took it is
-written to `keepalive.log` — `LANG=C.UTF-8 accepted` or `… refused by the
-server`. That line is the difference between "our bug" and "their sshd".
+Fixed by saying nothing when we have nothing to say:
 
-If the host has neither `C.UTF-8` nor a UTF-8 locale in `locale -a`, no client
-can fix it; vim needs `set encoding=utf-8` there, or the host needs a locale.
+- A local UTF-8 `LC_ALL` / `LC_CTYPE` / `LANG` is forwarded, the way ssh's
+  `SendEnv LANG LC_*` does. A non-UTF-8 local one is not (the terminal is
+  UTF-8-only). On Windows there is none, so **no `LANG` is sent at all** and the
+  host keeps its own — which is what MobaXterm and OpenSSH do.
+- The env requests now go *before* `pty-req`, the order OpenSSH uses, so a server
+  that applies the environment when it allocates the pty sees them.
+- `keepalive.log` says which of the three happened: `locale not sent (the host's
+  own is used)`, `LANG=… accepted`, `LANG=… refused by the server`.
+
+And the Go half was cleared first, so it is not in question: a vim-shaped screen
+fed through `encode.Reader` + `highlight.NewReader` one byte per `Read` comes out
+identical (`TestASplitChineseLineReachesTheTerminalByteForByte`), and a decorated
+plain line loses no character (`TestHighlightingNeverBreaksACharacter`).
 
 ### A paste is one CR per line, and the cursor is a bar (2026-11-13)
 

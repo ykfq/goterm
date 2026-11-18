@@ -386,18 +386,30 @@ func ptyShell(client *ssh.Client, cfg Config) (*shellPipes, error) {
 		ssh.TTY_OP_ISPEED: 14400,
 		ssh.TTY_OP_OSPEED: 14400,
 	}
-	if err := sess.RequestPty(cfg.Term, cfg.Rows, cfg.Cols, modes); err != nil {
-		return fail("request pty", err)
-	}
+	// The environment goes first, the way OpenSSH sends it (env requests, then
+	// pty-req): a server is free to apply the environment when it allocates the
+	// pty, and an env var that arrives after it may be taken or dropped
+	// depending on the implementation.
+	//
 	// Best effort: servers with UsePAM/SetEnv restrictions reject these, and a
 	// rejected env var is not a reason to fail the connection.
 	_ = sess.Setenv("TERM", cfg.Term)
 	_ = sess.Setenv("COLORTERM", "truecolor")
-	lang := remoteLocale()
-	if err := sess.Setenv("LANG", lang); err != nil {
-		sh.locale = "LANG=" + lang + " refused by the server (" + err.Error() + ")"
-	} else {
-		sh.locale = "LANG=" + lang + " accepted"
+	switch lang := remoteLocale(); lang {
+	case "":
+		// Nothing to say. The far side keeps whatever locale its own
+		// configuration gives it — which is what every client that does not
+		// invent one gets, MobaXterm and OpenSSH included.
+		sh.locale = "locale not sent (the host's own is used)"
+	default:
+		if err := sess.Setenv("LANG", lang); err != nil {
+			sh.locale = "LANG=" + lang + " refused by the server (" + err.Error() + ")"
+		} else {
+			sh.locale = "LANG=" + lang + " accepted"
+		}
+	}
+	if err := sess.RequestPty(cfg.Term, cfg.Rows, cfg.Cols, modes); err != nil {
+		return fail("request pty", err)
 	}
 
 	if sh.stdin, err = sess.StdinPipe(); err != nil {
@@ -897,22 +909,26 @@ func newSessionID() string {
 	return "s_" + hex.EncodeToString(b[:])
 }
 
-// remoteLocale is the locale the session asks the far side for.
+// remoteLocale is the locale the session asks the far side for, or "" for
+// "say nothing".
 //
-// The terminal can only render UTF-8, so the one thing worth forwarding is a
-// local locale that is itself UTF-8; on Windows there is none, and the fallback
-// is the locale glibc keeps even without a generated locale set. A remote
-// program that thinks its locale is C shows a UTF-8 file as latin1 noise —
-// `cat` is unaffected (it copies bytes), but `vim`, `less` and anything else
-// that maps characters turns the file into garbage, which is exactly the
-// report this came from.
+// It forwards a local locale the way ssh's `SendEnv LANG LC_*` does — and only
+// when the local one is UTF-8, since the terminal can only render UTF-8. On
+// Windows there is no local locale, so nothing is sent and the host keeps its
+// own.
+//
+// A default of our own was tried and removed: sending `LANG=C.UTF-8` to a host
+// that does not have that locale does not fall back to the host's — setlocale
+// fails and the session lands in C, which is how vim came to read a UTF-8 file
+// as latin1 (`~E`, `~C` for the continuation bytes) while `cat` — which only
+// copies bytes — was fine. Inventing a value is worse than saying nothing.
 func remoteLocale() string {
 	for _, key := range []string{"LC_ALL", "LC_CTYPE", "LANG"} {
 		if v := os.Getenv(key); v != "" && isUTF8Locale(v) {
 			return v
 		}
 	}
-	return "C.UTF-8"
+	return ""
 }
 
 func isUTF8Locale(v string) bool {

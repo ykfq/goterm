@@ -783,7 +783,12 @@ func printable(b []byte) string {
 	return sb.String()
 }
 
-func TestTheSessionAsksForAUTF8Locale(t *testing.T) {
+// The session forwards a local UTF-8 locale and otherwise says nothing at all.
+//
+// Saying nothing matters: a locale we invent (`C.UTF-8`) does not fall back to
+// the host's own — setlocale fails and the session lands in C — and that is how
+// vim came to draw a UTF-8 file as `~E`, `~C` noise while `cat` was fine.
+func TestTheSessionForwardsALocaleOnlyWhenItHasOne(t *testing.T) {
 	cases := []struct {
 		name string
 		env  map[string]string
@@ -791,8 +796,8 @@ func TestTheSessionAsksForAUTF8Locale(t *testing.T) {
 	}{
 		{"a utf-8 local locale is forwarded", map[string]string{"LANG": "zh_CN.UTF-8"}, "zh_CN.UTF-8"},
 		{"LC_ALL wins over LANG", map[string]string{"LC_ALL": "en_GB.utf8", "LANG": "zh_CN.UTF-8"}, "en_GB.utf8"},
-		{"a non-utf-8 local locale is not forwarded", map[string]string{"LANG": "en_US.ISO-8859-1"}, "C.UTF-8"},
-		{"nothing local, the fallback", nil, "C.UTF-8"},
+		{"a non-utf-8 local locale is not forwarded", map[string]string{"LANG": "en_US.ISO-8859-1"}, ""},
+		{"nothing local, nothing sent", nil, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
