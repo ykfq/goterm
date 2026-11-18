@@ -782,3 +782,29 @@ func printable(b []byte) string {
 	}
 	return sb.String()
 }
+
+func TestTheSessionAsksForAUTF8Locale(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+		want string
+	}{
+		{"a utf-8 local locale is forwarded", map[string]string{"LANG": "zh_CN.UTF-8"}, "zh_CN.UTF-8"},
+		{"LC_ALL wins over LANG", map[string]string{"LC_ALL": "en_GB.utf8", "LANG": "zh_CN.UTF-8"}, "en_GB.utf8"},
+		{"a non-utf-8 local locale is not forwarded", map[string]string{"LANG": "en_US.ISO-8859-1"}, "C.UTF-8"},
+		{"nothing local, the fallback", nil, "C.UTF-8"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, k := range []string{"LC_ALL", "LC_CTYPE", "LANG"} {
+				t.Setenv(k, "")
+			}
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			if got := remoteLocale(); got != tc.want {
+				t.Fatalf("remoteLocale() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

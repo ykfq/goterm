@@ -393,7 +393,12 @@ func ptyShell(client *ssh.Client, cfg Config) (*shellPipes, error) {
 	// rejected env var is not a reason to fail the connection.
 	_ = sess.Setenv("TERM", cfg.Term)
 	_ = sess.Setenv("COLORTERM", "truecolor")
-	_ = sess.Setenv("LANG", envOr("LANG", "C.UTF-8"))
+	lang := remoteLocale()
+	if err := sess.Setenv("LANG", lang); err != nil {
+		sh.locale = "LANG=" + lang + " refused by the server (" + err.Error() + ")"
+	} else {
+		sh.locale = "LANG=" + lang + " accepted"
+	}
 
 	if sh.stdin, err = sess.StdinPipe(); err != nil {
 		return fail("open stdin pipe", err)
@@ -416,6 +421,11 @@ type shellPipes struct {
 	stdin  io.WriteCloser
 	stdout io.Reader
 	stderr io.Reader
+	// locale is what the session asked the far side for, and whether it was
+	// taken. A remote vim with no UTF-8 locale shows a UTF-8 file as latin1
+	// noise (`rm /tmp` is not the only thing that can go wrong), and this is the
+	// only place that can say which half of it failed.
+	locale string
 }
 
 // register wraps a live shell in a Session, remembers it and starts its pumps.
@@ -448,6 +458,12 @@ func (m *Manager) register(link *connRef, cfg Config, sh *shellPipes, fingerprin
 	}
 	s.connectedAt.Store(started.UnixNano())
 	link.track(s)
+	if sh.locale != "" {
+		// A remote vim reading a UTF-8 file through a C locale is the one thing
+		// that can turn a file into garbage while `cat` shows it perfectly, so
+		// the diary says what was asked for and whether it was taken.
+		m.diag.note("%s: %s", cfg.Address(), sh.locale)
+	}
 	// One line per session, so a report says what the app thought it was told.
 	if opts := m.nudge.Load(); opts != nil {
 		m.diag.note("%s: connect via=%q nudge=%v every=%s keepalive=%s idle-stop=%s",
@@ -881,9 +897,25 @@ func newSessionID() string {
 	return "s_" + hex.EncodeToString(b[:])
 }
 
-func envOr(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
+// remoteLocale is the locale the session asks the far side for.
+//
+// The terminal can only render UTF-8, so the one thing worth forwarding is a
+// local locale that is itself UTF-8; on Windows there is none, and the fallback
+// is the locale glibc keeps even without a generated locale set. A remote
+// program that thinks its locale is C shows a UTF-8 file as latin1 noise —
+// `cat` is unaffected (it copies bytes), but `vim`, `less` and anything else
+// that maps characters turns the file into garbage, which is exactly the
+// report this came from.
+func remoteLocale() string {
+	for _, key := range []string{"LC_ALL", "LC_CTYPE", "LANG"} {
+		if v := os.Getenv(key); v != "" && isUTF8Locale(v) {
+			return v
+		}
 	}
-	return fallback
+	return "C.UTF-8"
+}
+
+func isUTF8Locale(v string) bool {
+	l := strings.ToLower(v)
+	return strings.Contains(l, "utf-8") || strings.Contains(l, "utf8")
 }

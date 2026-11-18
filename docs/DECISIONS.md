@@ -632,6 +632,38 @@ keystroke that went out, every keystroke suppressed and why, every probe that
 went unanswered, and how the session ended. `TestTheDiarySaysWhatWasConfiguredAndWhatWentOut`
 pins the first three.
 
+### `cat` shows Chinese, `vim` shows `~E~C` (2026-11-19)
+
+The report: a UTF-8 file of shell script reads correctly through `cat` and comes
+out of `vim` as `cms 全部迁移任务执行完成` → `cms \uFFFD~E\uFFFD\uFFFD~C\uFFFD\uFFFD~A移任…`.
+
+`cat` copies bytes, so it says nothing about the remote locale — and the `~E`,
+`~C`, `~A` are the tell: that is **vim**'s notation for unprintable *bytes*, and
+those bytes are the 0x80–0x9F continuation bytes of the UTF-8 sequences
+(0x85 → `~E`, 0x83 → `~C`, 0x81 → `~A`). vim is not in multibyte mode: its
+`'encoding'` fell back to latin1 because the session has no UTF-8 locale. The
+bytes the file has are never touched; vim is deciding what to draw.
+
+Two things were checked before changing anything:
+
+- **Our side is byte-exact.** A vim-shaped screen fed through
+  `encode.Reader` + `highlight.NewReader` one byte per `Read` comes out
+  identical (`TestASplitChineseLineReachesTheTerminalByteForByte`), and a
+  decorated plain line loses no character (`TestHighlightingNeverBreaksACharacter`).
+  So the split is not ours.
+- **The locale was already being asked for** (`LANG`, default `C.UTF-8`) but the
+  result was thrown away — a server that refuses env requests (`AcceptEnv`) left
+  the session in C and nobody could tell.
+
+Now the locale is chosen the way ssh chooses it: a local UTF-8 `LC_ALL` /
+`LC_CTYPE` / `LANG` is forwarded, a non-UTF-8 local one is not (the terminal is
+UTF-8-only), and `C.UTF-8` is the fallback. Whether the server took it is
+written to `keepalive.log` — `LANG=C.UTF-8 accepted` or `… refused by the
+server`. That line is the difference between "our bug" and "their sshd".
+
+If the host has neither `C.UTF-8` nor a UTF-8 locale in `locale -a`, no client
+can fix it; vim needs `set encoding=utf-8` there, or the host needs a locale.
+
 ### A paste is one CR per line, and the cursor is a bar (2026-11-13)
 
 **Every pasted line arrived with a blank line after it.** The clipboard on

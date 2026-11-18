@@ -192,6 +192,8 @@
 | 块字符粘连 | Ghostty 自绘块/框线，无需开关 | ✅（旧开关取消） |
 | 光标形状 | `terminal.Options.Cursor = CursorBar`：竖线而不是方块（方块在 14px 下压住相邻字符，看起来像反色单元格）；程序仍可用 DECSCUSR 改 | ✅ |
 | 中文乱码 → GB18030/Big5/Shift_JIS | Go 侧流式转码（`transform.NewReader`），设置改动对已开会话即时生效 | ✅ |
+| `cat` 正常、`vim` 乱码 | 远端会话没有 UTF-8 locale 时，vim 的 `encoding` 落到 latin1：它把 UTF-8 的续字节当不可打印字符显示成 `~E`/`~C`（`cat` 只搬字节，所以看不出来）。连接时按 ssh 的做法请求 `LANG`（本机是 UTF-8 就用本机的，否则 `C.UTF-8`），服务器接受与否写进 `keepalive.log` | ✅ |
+| 多字节字符被拆包 | 远端一字符一 `write` 是常态；`encode` 直通 + `highlight` 只插入 SGR，逐字节喂入也不改变任何字节（`TestASplitChineseLineReachesTheTerminalByteForByte`） | ✅ |
 
 ### 2.3 键盘与鼠标（plan.md §4）
 
