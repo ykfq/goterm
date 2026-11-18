@@ -19,20 +19,21 @@ import (
 // dumb as it can be, because every clever gate added in front of it has been a
 // way for the session to die quietly:
 //
-//   - Line empty: a carriage return. It is what a user's Enter does on an
-//     empty line — the shell answers with a fresh prompt and nothing runs.
-//   - Anything else on the line: a single space. It cannot submit a line, and
-//     it is typed input, which is what `TMOUT` and an activity detector count.
-//     It does leave one space on the line; a space followed by a backspace was
-//     tried and did not reset the timer on the user's hosts, so the plain space
-//     is what ships.
+//   - The line is provably empty: a carriage return. It is what a user's Enter
+//     does on an empty line — the shell answers with a fresh prompt and nothing
+//     runs.
+//   - Anything else — a half-typed command, a line recalled from history, an
+//     escape sequence still being typed — and it does **nothing at all**.
 //
-// "Anything else" deliberately swallows the cases the old code used to refuse:
-// a half-typed command (a space is safe), a line recalled from history with an
-// arrow key (a space is safe), and an escape sequence still being typed (a
-// space is safe; an Enter there is not). Refusing was how a `>` prompt with
-// half a loop on it, or a lone ESC, could silence the layer for good — and a
-// silent layer is a session that dies anyway.
+// The second rule is deliberate and it costs sessions. A space seemed safe
+// ("it cannot submit a line") and was not: it lands wherever the cursor is, so
+// a command left half-typed becomes a different command — `rm /tmp` turns into
+// `rm / tmp`, and the one that runs is the one nobody read. Refusing to touch a
+// line the user is still editing is worth a session logged out by its own
+// timer; the reverse is not.
+//
+// Silence is not permanent. The state is re-read every window, so the first
+// line the user submits (or cancels with Ctrl-C) puts the keystroke back on.
 //
 // Only two things stop it, and both are red lines: a transfer owns the stream
 // (红线 4), and the user has been gone past the idle window (红线 8).
@@ -199,13 +200,12 @@ func jitter(interval time.Duration) time.Duration {
 // nudgeOnce types one keystroke into the prompt and reports whether it went
 // out. The rule is the user's, in the plainest form:
 //
-//	line empty   -> Enter   (a fresh prompt, nothing runs)
-//	something on it -> a space (cannot submit a line)
+//	line provably empty -> Enter (a fresh prompt, nothing runs)
+//	anything else       -> nothing at all
 //
-// "Something" is any state the session is not sure is empty — text, a cursor
+// "Anything else" is any state the session is not sure is empty — text, a cursor
 // moved through recalled history, or an escape sequence still half-typed. The
-// safe answer for all of them is the same, so there is nothing left to get
-// wrong.
+// safe answer for all of them is the same: leave the line exactly as it is.
 func (s *Session) nudgeOnce() bool {
 	if s.closed() {
 		return false
@@ -216,18 +216,16 @@ func (s *Session) nudgeOnce() bool {
 		s.diary("%s: keystroke suppressed: a transfer owns the stream", s.info.Target)
 		return false
 	}
-	state, _ := s.typedLine()
-	key := "space"
-	if state == "empty" {
-		key = "enter"
-		_ = s.writeNudge([]byte("\r"))
-	} else {
-		// One space, and nothing else: it cannot submit a line, and it is input
-		// the far side counts. It leaves the space on the line — that is the
-		// price of the one keystroke that works everywhere.
-		_ = s.writeNudge([]byte(" "))
+	// Only a line that is provably empty gets a keystroke. A space looked
+	// harmless and is not: it lands wherever the cursor is, so a command left
+	// half-typed becomes a different command — `rm /tmp` to `rm / tmp` — and the
+	// one that runs is the one nobody read.
+	if state, _ := s.typedLine(); state != "empty" {
+		s.diary("%s: keystroke skipped: the line is not provably empty (%s)", s.info.Target, state)
+		return false
 	}
-	s.diary("%s: keystroke %s (line=%s)", s.info.Target, key, state)
+	_ = s.writeNudge([]byte("\r"))
+	s.diary("%s: keystroke enter", s.info.Target)
 	return true
 }
 
@@ -274,7 +272,7 @@ func (s *Session) NudgeState() (on bool, sent int64, dueIn time.Duration) {
 //   - nudgeFloor is the smallest interval a test may configure, so the
 //     settings floor does not make a sub-second window untestable;
 //   - nudgeTrace reports what a keystroke actually sent (the shell's echo is
-//     not enough to tell a space from nothing).
+//     not enough to tell an Enter from nothing).
 var nudgeFloor time.Duration
 
 var nudgeTrace = func(format string, args ...any) {

@@ -368,11 +368,11 @@ follows:
 | Line at the prompt | Keystroke | Why it is safe |
 | --- | --- | --- |
 | empty | `\r` | Enter on an empty line prints a fresh prompt; nothing runs. It is the only thing a shell that counts *completed lines* notices. |
-| anything else on it | one space | A space cannot submit a line and is typed input, which is what `TMOUT` and an activity detector count. It does leave the space on the line. A space followed by a backspace (which would leave the line untouched) was shipped first and **did not reset the timer on the hosts this was reported from** — only the empty-line Enter did — so the plain space is what ships. "Anything else" is text the user has not submitted, a line recalled from history with an arrow key, or an escape sequence still half-typed. |
+| anything else on it | nothing | A space cannot submit a line and is typed input, which is what `TMOUT` counts — and it was shipped for a few days, until the user reported what it does: it lands wherever the cursor is, so a command left half-typed becomes a different command. `rm /tmp` turns into `rm / tmp`, and the one that runs is the one nobody read. A session lost to its own shell timer is the cheaper failure, so the nudge never touches a line it cannot prove is empty. "Anything else" is text the user has not submitted, a line recalled from history with an arrow key, or an escape sequence still half-typed. |
 
-That table is now the whole rule, and the user asked for it in exactly those
-words after two rounds of gates that each had a way to silence it: **every
-minute, one Enter on an empty line, one space when the line is not empty.**
+That table is now the whole rule: **every minute, one Enter on an empty line,
+and nothing at all when the line is not provably empty.** The space was tried
+for a few days and withdrawn (2026-11-19): the user found it inside a command.
 `nudgeOnce` has two ways out and both are red lines — a transfer owns the stream
 (红线 4), or the user is gone past the idle window (红线 8).
 
@@ -384,14 +384,15 @@ Two gates were removed because each was a way for a live session to die:
   `TMOUT` or a bastion's input timer, so the session was logged out at its
   busiest. The window now counts from the last keystroke (or from connect), and
   nothing else moves it. Pinned by `TestContinuousOutputDoesNotPostponeTheKeystroke`.
-- **The "cannot tell what is on the line, so say nothing" branch.** A single ESC
-  keypress left the tracker pending, and pending meant silence — for good, and
-  even after readline itself had given up on the escape 0.5 s later. The line
-  cannot be known to be empty then, so the answer is a space: never an Enter.
-  Pinned by `TestNudgeSurvivesALoneEscape`.
+- **The "cannot tell what is on the line, so say nothing — for ever" branch.** A
+  single ESC keypress left the tracker pending, and pending meant silence with no
+  way back. The silence is right (the line cannot be proven empty); making it
+  permanent was not. The state is re-read every window, so the first line the
+  user submits or cancels puts the keystroke back. Pinned by
+  `TestALoneEscapeSilencesTheNudgeOnlyWhileItStands`.
 
-It ships **on**, with a switch to turn it off, an interval (default **1 min**)
-and a "fall back to a space" option. One minute is half the shortest input
+It ships **on**, with a switch to turn it off and an interval (default
+**1 min**). One minute is half the shortest input
 timeout anyone configures, so a missed tick still leaves another in time; the
 TMOUT notice now names the interval it is losing against, because "logged out
 again" with no numbers in it is what made this take three rounds.

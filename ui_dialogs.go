@@ -188,7 +188,7 @@ func (a *App) settingsBehaviour(c *ui.Context) {
 					a.applySettings()
 				}
 			})
-			ui.Text(c, "Every window GoTerm types one harmless key so a shell's own timeout (bash TMOUT) and a bastion's activity timer do not log the session out. On an empty line it is Enter; with anything on the line it is one space, which cannot submit anything. Never during a transfer.").
+			ui.Text(c, "Every window GoTerm types one harmless key so a shell's own timeout (bash TMOUT) and a bastion's activity timer do not log the session out. On an empty line it is Enter; with anything on the line it sends nothing at all — a space could land in the middle of a command you left half-typed. Never during a transfer.").
 				FontSize(11).TextColor(c.Theme().TextMuted)
 			if a.prefs.IdleNudge {
 				ui.Field(c, "Quiet window before that keystroke", func() {

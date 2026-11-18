@@ -111,7 +111,12 @@ func TestNudgeEntersOnAnEmptyLine(t *testing.T) {
 // count. (A space followed by a backspace was tried first; it did not reset the
 // timer on the hosts this was reported from, so the plain space ships.)
 // The shell records the wire bytes, so this is about what it actually received.
-func TestNudgeSpaceWhenACommandIsHalfTyped(t *testing.T) {
+// A line the user is still editing is never touched. A space was tried here
+// ("it cannot submit a line") and it was wrong: it lands wherever the cursor is,
+// so `rm /tmp` becomes `rm / tmp` and the command that runs is the one nobody
+// read. When the line is not provably empty the nudge sends nothing at all —
+// and picks up again at the first line the user submits.
+func TestNoKeystrokeWhileTheLineHasText(t *testing.T) {
 	var mu sync.Mutex
 	var received []byte
 	h := newHarness(t, sshtest.Options{
@@ -137,7 +142,7 @@ func TestNudgeSpaceWhenACommandIsHalfTyped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
-	h.send(sess, "echo NEVER-RUNS")
+	h.send(sess, "rm /tmp")
 	bookFromNow(sess)
 
 	got := func() string {
@@ -145,17 +150,21 @@ func TestNudgeSpaceWhenACommandIsHalfTyped(t *testing.T) {
 		defer mu.Unlock()
 		return string(received)
 	}
-	if !waitFor(t, 4*nudgeAfter, func() bool { return strings.Contains(got(), "echo NEVER-RUNS ") }) {
-		t.Fatalf("no space arrived at the half-typed line: %q", got())
+	// Three windows with the line held: not one byte may be added to it.
+	time.Sleep(3 * nudgeAfter)
+	if wire := got(); wire != "rm /tmp" {
+		t.Fatalf("the nudge touched a line the user was editing: %q", wire)
 	}
-	// One space per window, and nothing else: no erase key, no Enter.
-	time.Sleep(nudgeAfter / 2)
-	wire := got()
-	if strings.ContainsAny(wire, "\r\n\x7f\x08") {
-		t.Fatalf("the nudge sent more than a space: %q", wire)
+
+	// Submit the line, and the keystroke comes back — an Enter, now that the
+	// line really is empty.
+	h.send(sess, "\r")
+	bookFromNow(sess)
+	if !waitFor(t, 4*nudgeAfter, func() bool { _, sent, _ := sess.NudgeState(); return sent >= 1 }) {
+		t.Fatalf("the keystroke did not resume after the line was submitted: %q", got())
 	}
-	if strings.Count(wire, "echo NEVER-RUNS") != 1 {
-		t.Fatalf("the line was rewritten rather than nudged: %q", wire)
+	if wire := got(); strings.Count(wire, "\r") < 2 {
+		t.Fatalf("the resumed keystroke was not an Enter on the empty line: %q", wire)
 	}
 }
 
@@ -428,17 +437,30 @@ func TestNudgeStateCountsWhatLeft(t *testing.T) {
 // treated that as "never nudge again", which is a session that dies with the
 // feature apparently on. The line cannot be known to be empty, so the answer is
 // a space: never an Enter.
-func TestNudgeSurvivesALoneEscape(t *testing.T) {
+// A lone ESC leaves the line in a state that cannot be proven empty, so the
+// nudge stays out of it. That silence must end when the line does: the old bug
+// was a state like this silencing the layer for the life of the session.
+func TestALoneEscapeSilencesTheNudgeOnlyWhileItStands(t *testing.T) {
 	trace := traceNudges(t)
 	h, sess := nudgeHarness(t)
 	typeBytes(t, h, sess, "\x1b")
 	bookFromNow(sess)
 
-	if !waitFor(t, 4*nudgeAfter, func() bool { return len(*trace) > 0 }) {
-		t.Fatalf("a session holding a lone ESC was never nudged again")
+	time.Sleep(3 * nudgeAfter)
+	if len(*trace) != 0 {
+		t.Fatalf("the nudge typed into a line it could not read: %v", *trace)
 	}
-	if got := (*trace)[0]; got != "\" \"" {
-		t.Fatalf("the keystroke was %s, want a single space: an Enter there could submit something", got)
+
+	// Ctrl-C clears the line, and the keystroke is back. (The shell echoes it as
+	// ^C, so the wait is for that rather than for the raw byte.)
+	h.send(sess, "\x03")
+	h.expectOutput(sess, "^C")
+	bookFromNow(sess)
+	if !waitFor(t, 4*nudgeAfter, func() bool { return len(*trace) > 0 }) {
+		t.Fatal("the nudge never came back after the line was cleared")
+	}
+	if got := (*trace)[0]; got != "\"\\r\"" {
+		t.Fatalf("the keystroke was %s, want an Enter on the now-empty line", got)
 	}
 }
 
