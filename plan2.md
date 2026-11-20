@@ -190,6 +190,7 @@
 | 自定义背景色 / 主题 | `terminal.Theme` + Ghostty 主题列表 | 🚧 |
 | htop/systemctl 撑不满 | VT 自带 reflow + resize | ✅ |
 | 块字符粘连 | Ghostty 自绘块/框线，无需开关 | ✅（旧开关取消） |
+| 终端状态复位（2.3.x） | View → **Reset Terminal**（`Ctrl+Shift+K`）或标签右键：向模拟器喂入"光标可见 + 退出备用屏幕 + 关鼠标/焦点/括号粘贴 + 清 kitty 键盘标志 + DECSTR"，**不碰滚屏**。全屏程序（堡垒机资产菜单、监控 TUI、被杀掉的 tmux）异常退出时会把模拟器留在隐藏光标、备用屏幕、kitty 键盘标志的状态，症状就是 Ctrl+C 变成 `9;5u`、光标不显示，以前只能关标签 | ✅ |
 | 光标形状 | `terminal.Options.Cursor = CursorBar`：竖线而不是方块（方块在 14px 下压住相邻字符，看起来像反色单元格）；程序仍可用 DECSCUSR 改 | ✅ |
 | 中文乱码 → GB18030/Big5/Shift_JIS | Go 侧流式转码（`transform.NewReader`），设置改动对已开会话即时生效 | ✅ |
 | `cat` 正常、`vim` 乱码 | vim 拿到的字节是对的，是它的 `encoding` 落到了 latin1，把 UTF-8 的续字节（0x80–0x9F）画成 `~E`/`~C`/`~A`；`cat` 只搬字节所以看不出来。**根因是我们自己**：客户端每次连接都替远端塞 `LANG=C.UTF-8`，而 `setlocale` 对这个不存在的 locale 不会回退到主机自己的配置，直接把会话丢进 C 语言环境。现在按 ssh 的规则：本机有 UTF-8 locale 才转发，没有就什么都不发（MobaXterm/OpenSSH 的做法）；env 请求也按 OpenSSH 的顺序放在 `pty-req` 之前；三种结果都写进 `keepalive.log` | ✅ |

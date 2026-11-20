@@ -45,6 +45,7 @@ func (a *App) menus() []appMenu {
 		{label: "View", cmds: []appCommand{
 			{label: "Find in Terminal…", accel: "CmdOrCtrl+Shift+F", run: a.openFind},
 			{label: "File Panel", accel: "CmdOrCtrl+Shift+E", run: func() { a.toggleSFTP(a.current()) }},
+			{label: "Reset Terminal", accel: "CmdOrCtrl+Shift+K", run: func() { a.resetTerminal(a.current()) }},
 			{label: "Next Tab", accel: "Ctrl+Tab", run: func() {
 				a.selectTab((a.active + 1) % max(len(a.tabs), 1))
 			}},

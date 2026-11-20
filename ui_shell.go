@@ -416,6 +416,9 @@ func (a *App) tabChip(c *ui.Context, i int, t *Tab) {
 		if m.Item("Reconnect").Chosen() {
 			a.post(func() { a.reconnect(t) })
 		}
+		if m.Item("Reset terminal").Chosen() {
+			a.post(func() { a.resetTerminal(t) })
+		}
 		if m.Item("Find in terminal…").Shortcut(ui.Ctrl|ui.Shift, ui.KeyF).Chosen() {
 			a.post(func() {
 				a.selectTab(indexOfTab(a.tabs, t))

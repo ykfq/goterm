@@ -751,6 +751,43 @@ func (a *App) startTerminal(t *Tab) {
 	}
 }
 
+// terminalReset is what a tab is fed to put the emulator back into a state a
+// shell can use, without touching the scrollback.
+//
+// A full-screen program that dies without cleaning up — a bastion's asset menu,
+// a monitoring TUI, a `tmux` that was killed — leaves the emulator in whatever
+// modes it had set: the cursor hidden, the alternate screen up, mouse and focus
+// reporting on, and the kitty keyboard flags pushed, which is why every
+// following keypress goes out as `\x1b[99;5u` and the shell echoes `9;5u` at you
+// instead of interrupting anything. Closing the tab was the only way out.
+//
+// Each line undoes one of those, and the last one is the soft reset (DECSTR)
+// that sweeps whatever is left. None of them clear the screen or the
+// scrollback: a reset that threw away the history would be a worse trade than
+// the state it fixes.
+const terminalReset = "\x1b[?25h" + // cursor visible again
+	"\x1b[?1049l" + // leave the alternate screen, main screen and its history back
+	"\x1b[?1000l\x1b[?1002l\x1b[?1003l" + // mouse tracking off
+	"\x1b[?1006l\x1b[?1015l" + // the mouse encodings that go with it
+	"\x1b[?1004l" + // focus reporting off
+	"\x1b[?2004l" + // bracketed paste off
+	"\x1b[=0;1u" + // kitty keyboard flags cleared, so keys are keys again
+	"\x1b[!p" // DECSTR: the modes not named above
+
+// resetTerminal puts the current terminal back into a usable state. The bytes
+// go into the emulator only; the remote shell is not sent anything, so the user
+// can type its own `reset` afterwards if the pty was left in a strange mode too.
+func (a *App) resetTerminal(t *Tab) {
+	if t == nil || t.Term == nil {
+		return
+	}
+	t.Term.Feed([]byte(terminalReset))
+	t.Focus.Focus()
+	if a.win != nil {
+		a.win.Invalidate()
+	}
+}
+
 // sessionConn adapts a session to terminal.Options.Conn: reads are decoded,
 // writes go to the remote PTY, and Close ends both.
 type sessionConn struct {

@@ -632,6 +632,33 @@ keystroke that went out, every keystroke suppressed and why, every probe that
 went unanswered, and how the session ended. `TestTheDiarySaysWhatWasConfiguredAndWhatWentOut`
 pins the first three.
 
+### A tab that echoes `9;5u` at you (2026-11-20)
+
+Reported after the idle window closed every session and the user logged in
+again: no cursor, control keys doing nothing, and `Ctrl+C` printing `9;5u`,
+`Ctrl+R` printing `4;5u` — until the tab was closed.
+
+`9;5u` is the tail of `\x1b[99;5u`: the **kitty keyboard protocol**'s encoding of
+Ctrl+C (99, modifier 5), and `114;5u` is Ctrl+R. A terminal only sends those when
+a program pushed the keyboard flags, and the program that pushes them is exactly
+the kind that dies without cleaning up — a bastion's asset menu, a monitoring
+TUI, a killed `tmux`. A shell that never asked for them echoes them back as
+text, which is what the user saw.
+
+What the client can do about a screen someone else left behind is **reset it**,
+so View → **Reset Terminal** (`Ctrl+Shift+K`, and in a tab's context menu) feeds
+the emulator the modes a usable shell needs: cursor visible, alternate screen
+left, mouse and focus reporting off, bracketed paste off, kitty flags cleared
+(`CSI = 0 ; 1 u`), and a soft reset (DECSTR) for the rest. The bytes go into the
+emulator only — the remote is not sent anything, so the user can follow with
+`reset` if the pty was left strange too — and nothing clears the screen or the
+scrollback, because a reset that throws the history away is a worse trade than
+the state it fixes.
+
+`TestTheResetSequenceUndoesWhatAFullScreenProgramLeaves` pins every one of those
+and pins the absence of the clear sequences; `TestResetTerminalIsACommandWithAKey`
+keeps the command in the View menu.
+
 ### `cat` shows Chinese, `vim` shows `~E~C` (2026-11-19)
 
 The report: a UTF-8 file of shell script reads correctly through `cat` and comes
