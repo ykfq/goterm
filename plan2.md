@@ -220,8 +220,8 @@
 | 多标签、每标签独立会话 | `[]*Tab`，每标签一个 `terminal.Terminal` | 🚧 |
 | Duplicate 不二次登录 | `Manager.Duplicate` 不变 | 🚧 |
 | 连接引用计数 / 最后标签才关 | `internal/sshx/link.go` 不变 | ✅ |
-| Reconnect | 关终端 → 用原 Config 重连 | 🚧 |
-| ad-hoc 会话 Reconnect 置灰 | 无 hostID 时禁用菜单项 | 🚧 |
+| Reconnect | 用原 Config 重连，**终端不重建**：每个标签一个 `tabScreen`（终端整个生命周期只读它一个对象），重连只把后面的会话换掉，滚屏历史原样保留、新 shell 的提示符接在下面；重连时向模拟器喂一次复位序列，免得新 shell 继承旧程序的光标/键盘模式 | ✅ |
+| ad-hoc 会话 Reconnect 置灰 | 无 hostID 时禁用菜单项 | ✅ |
 | 拖拽调整标签顺序 | 自定义标签栏 + `Dragged()` 换位 | ✅ |
 | 标签的选中态 | 条带是 `Surface`，选中的标签填 `Background`（=终端底色）+ 加粗 + 正文色，其余透明 + 灰字；悬停 `SurfaceHover`、拖动中 `SurfacePressed`。以前选中和未选中都是 `Surface`，全是同一个颜色，点一下看不出来 | ✅ |
 | **大输出内存涨到 1G** | 终端滚动回看有字节上限；Conn 队列 4MB 满即停读 SSH（TCP 背压） | 🚧 |

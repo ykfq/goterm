@@ -28,7 +28,7 @@ import (
 )
 
 // Version is what the status bar and About show.
-const Version = "2.3.1"
+const Version = "2.3.2"
 
 // App is GoTerm's state. In 1.x this type was a Wails service and the frontend
 // called it over IPC; now it is an ordinary Go value that the view reads on the
@@ -106,10 +106,14 @@ type Tab struct {
 	Status string // connecting | connected | closed | failed
 	Err    string
 
-	Sess  *sshx.Session
-	Term  *terminal.Terminal
-	Conn  io.Closer
-	Focus ui.Handle
+	Sess *sshx.Session
+	Term *terminal.Terminal
+	// Screen is what the terminal reads and writes for the life of the tab; a
+	// reconnect swaps the session behind it rather than replacing the terminal,
+	// so the scrollback survives.
+	Screen *tabScreen
+	Conn   io.Closer
+	Focus  ui.Handle
 
 	Cfg sshx.Config
 	OV  hoststore.ConnectOverrides
@@ -696,8 +700,15 @@ func (a *App) startTerminal(t *Tab) {
 			t.Inactive.Store(true)
 		}
 	}
+	// The screen outlives the sessions on it: a reconnect keeps the terminal,
+	// the scrollback, the font size and the theme, and only the shell behind it
+	// is new.
+	fresh := t.Term == nil || t.Screen == nil
+	if fresh {
+		t.Screen = newTabScreen()
+	}
 	term, err := terminal.New(terminal.Options{
-		Conn:       conn,
+		Conn:       t.Screen,
 		Font:       terminal.Font{Family: a.prefs.FontFamily, Size: float32(a.prefs.FontSize)},
 		Scrollback: a.prefs.ScrollbackMB << 20,
 		Theme:      a.terminalTheme(),
@@ -739,8 +750,18 @@ func (a *App) startTerminal(t *Tab) {
 		t.Err = "Terminal engine: " + err.Error()
 		return
 	}
-	t.Term = term
+	if fresh {
+		t.Term = term
+	}
+	t.Screen.attach(conn)
 	t.Conn = conn
+	if !fresh {
+		// A new shell behind an old screen. Whatever the last program left on
+		// the emulator — a hidden cursor, the alternate screen, the kitty
+		// keyboard flags — is undone here, and the screen itself is kept.
+		t.Term.Feed([]byte(terminalReset))
+		t.Term.Feed([]byte("\r\n"))
+	}
 	t.Focus.Focus()
 	if a.startFiles {
 		a.startFiles = false

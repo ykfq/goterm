@@ -93,7 +93,7 @@ func (a *App) settingsAppearance(c *ui.Context) {
 					// note below says.
 				}
 			})
-			ui.Text(c, "Scrollback applies to new terminals; reconnect a tab to shrink an existing one.").
+			ui.Text(c, "Scrollback applies to new tabs. A reconnect keeps the tab's screen, and its history, as it is.").
 				FontSize(11).TextColor(c.Theme().TextMuted)
 
 			ui.Field(c, "Selecting text copies it", func() {

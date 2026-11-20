@@ -632,6 +632,34 @@ keystroke that went out, every keystroke suppressed and why, every probe that
 went unanswered, and how the session ended. `TestTheDiarySaysWhatWasConfiguredAndWhatWentOut`
 pins the first three.
 
+### A reconnect keeps what you were reading (2026-11-20)
+
+The user's report settled which of the two scrollback complaints was real: after
+leaving a JumpServer target and picking another asset, the history is still
+there (that is the alternate screen behaving as designed); after pressing
+**Reconnect** it was gone. Ours, and a new terminal every time is why.
+
+A terminal is now created once per tab and lives until the tab is closed. The
+thing behind it is a `tabScreen` — a small `io.ReadWriteCloser` that the
+emulator reads and writes for the tab's whole life, and that points at whichever
+session is current. Reconnect detaches the old session and attaches the new one;
+everything printed before stays above, and the new prompt arrives underneath it.
+
+The rule that makes it work: **Read never ends while the tab is open.** A
+terminal that sees EOF or an error from its Conn is finished, and it takes the
+scrollback with it — so when a session dies, the screen forgets it and waits for
+the next one instead of returning. `TestTheScreenOutlivesASessionThatEnded` pins
+exactly that, with one reader spanning two sessions the way the terminal has
+one; `TestKeysGoNowhereBetweenSessions` pins that keys typed with no session go
+nowhere quietly rather than raising an error, and `TestTheGeometryIsKeptForTheNextSession`
+pins that the new session is told the size the view last asked for rather than
+the size the connection was dialled with.
+
+On reattach the screen is fed the reset sequence from the entry above before the
+new session's output: a new shell must not inherit the cursor, alternate screen
+or kitty flags the old program left behind. The screen is what is kept; its
+state is not.
+
 ### A tab that echoes `9;5u` at you (2026-11-20)
 
 Reported after the idle window closed every session and the user logged in

@@ -622,8 +622,8 @@ func (a *App) reconnect(t *Tab) {
 		a.status = "This session was not started from a saved host; use the host list to connect again."
 		return
 	}
-	term, sess := t.Term, t.Sess
-	t.Term, t.Sess = nil, nil
+	sess, conn := t.Sess, t.Conn
+	t.Sess, t.Conn = nil, nil
 	t.LogPath = ""
 	t.SearchOpen = false
 	t.Status = StatusConnecting
@@ -633,9 +633,15 @@ func (a *App) reconnect(t *Tab) {
 	// end in "authentication failed" with nothing asked; clearing it sends the
 	// reconnect back through the OTP prompt, like a first connect.
 	t.OV.TwoFactorCode = ""
+	// The terminal stays. Detaching the screen closes the old session's side and
+	// leaves everything it printed where it is, so the reconnect continues under
+	// the history instead of wiping it.
+	if t.Screen != nil {
+		t.Screen.attach(nil)
+	}
 	go func() {
-		if term != nil {
-			_ = term.Close()
+		if conn != nil {
+			_ = conn.Close()
 		}
 		if sess != nil {
 			_ = sess.Close()
