@@ -294,7 +294,11 @@ func (a *App) sftpView(c *ui.Context, t *Tab) {
 	if st == nil || !st.Open {
 		return
 	}
-	ui.Column(c).FillHeight().Background(c.Theme().Surface).Border(1, c.Theme().Border).Children(func() {
+	// The panel takes a drop of local files itself, as the terminal does: the
+	// folder it would upload to is the one on screen, and it lights up while
+	// the files hover over it.
+	panel := ui.Column(c).FillHeight().Background(c.Theme().Surface).Border(1, c.Theme().Border)
+	panel.Children(func() {
 		ui.Row(c).Padding(8, 10).Gap(8).Children(func() {
 			ui.Text(c, "Files").Bold().Grow(1)
 			ui.Button(c, "✕").Label("Close files").BorderWidth(0).Background(ui.Transparent).
@@ -388,6 +392,14 @@ func (a *App) sftpView(c *ui.Context, t *Tab) {
 		}
 		ui.Text(c, footer).FontSize(10).TextColor(c.Theme().TextMuted).Padding(4, 10).MaxLines(1)
 	})
+	if files := panel.DroppedFiles(); len(files) > 0 {
+		a.post(func() { a.sftpUploadPaths(t, files) })
+	}
+	if panel.FileDragOver() {
+		panel.Border(2, c.Theme().Accent)
+		ui.Text(c, "Drop to upload to "+sftpDir(t)).FontSize(11).
+			TextColor(c.Theme().Accent).Padding(4, 10)
+	}
 }
 
 func (a *App) sftpRow(c *ui.Context, t *Tab, st *SFTPPanel, e sftpx.Entry) {

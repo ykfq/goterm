@@ -71,9 +71,22 @@
 - **P4 部分**：标签拖拽换位（带活动标签跟随测试）；远端编码切换对已开会话即时生效
   （`decodingReader`，不重建终端）。
 - **关键字高亮**：`internal/highlight` 在解码后的字节流上注入 SGR。只处理不含 ESC 的纯文本行；
-  跟踪备用屏幕、绝对光标定位和程序自己设置的 SGR，`vim`/`less`/`top`/`htop`、`grep --color`、
-  编译器彩色诊断一律不接管。覆盖 `cat`/`tail`/`head`/`ps`/`tee` 与普通日志的关键字、级别、
-  IP/URL/时间、shell/bash 命令、syslog 与 nginx 日志/配置；设置里可即时开关。
+  让位规则看**程序有没有自己上色**（`colourSeen`）：`vim`/`top`/`htop`/跳板机菜单这类自己画色的
+  屏幕，以及 `grep --color`、编译器彩色诊断这类已着色的行，一律不接管；`less` 看纯文本时没有
+  自己的颜色，因此和 `cat` 一样上色（2026-11-20）。覆盖 `cat`/`tail`/`head`/`ps`/`tee`/`less`
+  与普通日志的关键字、级别、IP/URL/时间、shell/bash 命令、syslog 与 nginx 日志/配置；设置里可即时开关。
+- **自定义高亮关键字按行上色**：格式 `颜色: 词1|词2`，颜色可写 `RED`/`GREEN`/`YELLOW`/`BLUE`/
+  `MAGENTA`/`CYAN`/`WHITE`/`GREY`/`BLACK` 或 `#RRGGBB`，不写颜色则用默认色（亮品红），旧的无颜色
+  单词表照旧可用；回车可续行（文本框内容不再每帧重建），颜色名写错会在对话框里点名提示。
+- **设置对话框可拖拽调整大小**：尺寸存 `settingsWidth`/`settingsHeight`（440–1200 × 340–960），
+  右下角把手用 `Dragged()` 逐帧增量，拖动中即夹紧，`DragEnded()` 时落盘一次。
+- **侧栏 SFTP 会话列表**：侧栏左下角按会话列出可浏览的连接（有活会话，或面板仍开着的断开会话），
+  双击在其终端右侧打开面板；行上带状态点、当前远端路径与 `user@host`，右键可开/关文件面板、
+  跳到该标签、重连。断开的会话只显示「Closed — reconnect to browse」，不会开一个只会报错的面板。
+- **SFTP 面板接拖放**：本地文件拖到面板上，就传到它当前显示的目录；拖动经过时描边高亮。
+- **设置页的滚动条不再压住控件**：mygo 的滚动条画在内容之上，所以设置页在右侧留出
+  `Theme.ScrollbarWidth + 2` 的空白（默认 8 DIP）；关键词输入框用 `KeepScrollbars(true)` 常显
+  自己的滚动条。Storage 页也套上同一个滚动容器，弹窗拖到最矮时内容不再溢出面板画到遮罩上。
 
 **新增（2026-11-12，开发环境迁到 Linux）**
 
@@ -140,6 +153,11 @@
   交叉编译产出可跑的 `GoTerm.exe` 已验证。
 - （2026-11-12）自定义关键字：`internal/highlight/words_test.go`（大小写、整词、CJK 子串、
   不压内置、长词优先、中途换表即生效）+ settings 解析/限幅/落盘往返测试。
+- （2026-11-20）`less` 高亮：`internal/highlight` 的 `colourSeen`；真实 `less -R` 抓包形状的
+  测试、搜索反显只挡一行、vim 屏幕逐字节不变；破坏性验证去掉 `colourSeen` 即变红。
+- （2026-11-20）设置页：`settings_dialog_test.go` 钉住回车续行（旧写法会拼成
+  `RED: error|fatalGREEN: info`）、每行颜色落到设置、错色名提示、拖拽改尺寸与夹紧、
+  控件右端距边沿 ≥ 滚动条宽度、关键词框常显滚动条、Storage 页最矮高度时折叠处被裁剪且可滚到底。
 
 ## 1. 架构对照
 
@@ -182,9 +200,9 @@
 | --- | --- | --- |
 | 二进制保真 | 字节直接进 VT，无 base64 往返 | ✅（更短路径） |
 | GPU 渲染 | mygo D3D11/Metal/OpenGL，VT 自绘 | ✅ |
-| 关键字高亮（MobaXterm filter） | `internal/highlight`：只装饰“不含 ESC 的纯文本行”，跟踪备用屏幕/绝对光标/程序 SGR；`cat`/`tail`/`head`/`ps`/`tee` 与普通日志着色，`vim`/`less`/`top` 等全屏程序不接管 | ✅ |
+| 关键字高亮（MobaXterm filter） | `internal/highlight`：只装饰“不含 ESC 的纯文本行”；`colourSeen` 记住程序是否自己上过色，上过就让位（`vim`/`top`），没上过就照常着色（`cat`/`tail`/`head`/`ps`/`tee`/`less`） | ✅ |
 | `grep --color` 不覆盖 | 程序自己设置了前景/背景/反显时，该行不再注入颜色；粗体/下划线仍可叠加 | ✅ |
-| 自定义关键字 / `.msyn` 导入 | 内置 shell/bash/syslog/nginx/data/words 规则；自定义关键字走 `highlightWords`（设置页逐行编辑，即时生效，ASCII 整词 / 非 ASCII 子串）；`.msyn` 导入未做 | ✅ |
+| 自定义关键字 / `.msyn` 导入 | 内置 shell/bash/syslog/nginx/data/words 规则；自定义关键字走 `highlightWords`，每行 `颜色: 词1|词2`（颜色名或 `#RRGGBB`，不写用默认色，旧格式兼容），设置页逐行编辑、回车续行、即时生效；`.msyn` 导入未做 | ✅ |
 | 字体只列等宽 | `internal/fonts` 不变，`ui.RegisterFont`/`terminal.Font` | ✅ |
 | 单词分隔符可配 | Ghostty 选择规则固定 | ⚠️ |
 | 自定义背景色 / 主题 | `terminal.Theme` + Ghostty 主题列表 | 🚧 |
@@ -239,7 +257,8 @@
 | 原生文件选择框 | mygo 桌面 API（`mygo.Dialog`） | ✅ |
 | 路径限制 / `../` 消毒 | `internal/sftpx` 不变 | ✅ |
 | 取消不报错 | 原生对话框取消语义 | ✅ |
-| SFTP 面板 | `internal/sftpx` + 原生列表 | ✅ |
+| SFTP 面板 | `internal/sftpx` + 原生列表；侧栏左下角有「SFTP sessions」列表，双击会话即在其终端右侧打开文件面板，分隔条拖动时终端随之收窄 | ✅ |
+| SFTP 拖拽上传 | 把本地文件拖到文件面板上即上传到面板当前目录（拖到终端上同样上传），拖动经过时面板描边并提示目标目录 | ✅ |
 | 传输中不插字节（红线 4） | 传输期间终端字节由过滤器独占，UI 不插手 | ✅ |
 
 ### 2.6 界面、主题与设置（plan.md §7）
@@ -249,7 +268,7 @@
 | 侧栏主机列表（搜索/分组/双击连接） | `ui.SearchField` + `ui.Sidebar` | 🚧 |
 | 深/浅色主题 | mygo 跟随系统 + `terminal.Theme` | 🚧 |
 | 标题栏跟随主题 | 原生窗口，系统处理 | ✅ |
-| 设置面板分页 | `ui.Tabs` + `ui.Modal` | 🚧 |
+| 设置面板分页 | `ui.Tabs` + `ui.Modal`，右下角把手拖拽改尺寸（`settingsWidth`/`settingsHeight`），三页共用滚动容器 | ✅ |
 | 块字符开关 | 取消（Ghostty 自绘） | ❌ |
 | 远端编码 | 设置 → 编码，Go 转码（即时生效） | ✅ |
 | 状态栏（版本/平台/凭据后端） | 底部状态栏 | 🚧 |
@@ -348,9 +367,11 @@ Linux 开发机上一条命令替代前三行：`./build/test.sh`（内含终端
 ## 6. 需要决策/说明的差异
 
 1. **关键字高亮**：VT 模拟器没有逐行改色接口，因此在字节流层注入 SGR，但把边界写死在实现里：
-   只处理不含 ESC 的纯文本行；进入备用屏幕（`?1049`/`?1047`/`?47`）、出现绝对光标定位（`H`/`f`）、
-   或程序自己选了颜色时，高亮自动让位。因此 `cat`/`tail`/`head`/`ps`/`tee`/`top -b` 会着色，
-   而 `vim`/`less`/交互式 `top` 保持原样。自定义规则与 `.msyn` 导入仍待做。
+   只处理不含 ESC 的纯文本行；备用屏幕（`?1049`/`?1047`/`?47`）、绝对光标定位（`H`/`f`）和
+   程序自己选的 SGR 不再是"一律不碰"，而是看 `colourSeen`——程序在这块屏上选过前景/背景色
+   就让位（`vim`/`top`/`nano`），没选过就照常着色；反显只让位它所在的那一行（`less` 的搜索
+   结果就是反显）。因此 `cat`/`tail`/`head`/`ps`/`tee`/`top -b` 会着色，`less` 看纯文本也着色；
+   `vim`/交互式 `top` 保持原样，`less -R` 看自带颜色的文件也让位。`.msyn` 导入仍待做。
 2. **滚动回看单位**：Ghostty 按字节，不再按行；默认 8 MB。
 3. **设置迁移**：旧 localStorage 设置不迁移，升级后回默认值。
 4. **trzsz/ZMODEM**：已接 `trzsz-go` 的 `TrzszFilter`（`transfer.go`），关掉了它的 Windows 控制台协议改写（我们不是 ConPTY），

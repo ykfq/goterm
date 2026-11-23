@@ -13,10 +13,13 @@
 //     line (grep --color, ls --color, a compiler diagnostic), the highlighter
 //     stands down for that line.
 //
-// Full-screen programs (vim, less, top) are skipped: a cursor-addressed screen
-// is painted from cells, and inserting colours into it fights the program's own
-// redraws. Plain output from cat, tail, head, ps and tee is what this package
-// is for.
+// Full-screen paint is judged by one question: has this program used colour?
+// vim, top and nano have, and inserting colours into a screen they already
+// colour fights their own redraws, so the highlighter stands down for as long
+// as that screen lasts. A pager showing plain text (less on most files) has
+// not, and is painted exactly like cat: its cursor-addressed rows are lines of
+// text, and colouring them is the whole point. Plain output from cat, tail,
+// head, ps and tee is what this package was built for; less is now included.
 package highlight
 
 import (
@@ -57,8 +60,16 @@ type Highlighter struct {
 	altScreen bool
 	// screenHint is set once a program positions the cursor absolutely. While
 	// it is set, a fragment without a line break is that program's screen
-	// painting and is left alone.
+	// painting rather than a line of output.
 	screenHint bool
+	// colourSeen is set once the program owning the current screen has picked
+	// a foreground or background colour. It is what separates vim or top (paint
+	// self-styled cells; our colour would collide) from less on a plain file
+	// (paints plain text rows; there is no palette to collide with). Reverse
+	// video does not set it: less marks a search hit that way, and a pager with
+	// one highlight must not lose all the others. Cleared when a different
+	// screen regime begins, because the next program has its own palette.
+	colourSeen bool
 	// carry is an escape sequence the chunk boundary cut in half. It is carried
 	// to the next chunk rather than guessed at, so a colour can never be
 	// inserted inside a cursor-movement sequence that arrived in two pieces.
@@ -121,6 +132,7 @@ func (h *Highlighter) Reset() {
 	h.lineTinted = false
 	h.altScreen = false
 	h.screenHint = false
+	h.colourSeen = false
 	h.carry = ""
 }
 
@@ -194,13 +206,14 @@ func (h *Highlighter) paint(run string, out *strings.Builder) {
 		out.WriteString(run)
 		return
 	}
-	if h.altScreen {
+	if h.altScreen && h.colourSeen {
 		out.WriteString(run)
 		return
 	}
 	// A fragment with no line break after an absolute cursor move is a screen
-	// repaint, not a line of output.
-	if h.screenHint && !strings.Contains(run, "\n") {
+	// repaint, not a line of output. A pager in a plain screen repaints plain
+	// text, and a repaint of plain text is a line like any other.
+	if h.screenHint && h.colourSeen && !strings.Contains(run, "\n") {
 		out.WriteString(run)
 		return
 	}
@@ -369,6 +382,10 @@ func (h *Highlighter) observe(sequence string) {
 			h.style = ""
 			h.lineTinted = false
 			h.screenHint = false
+			// A new screen regime: the pager or editor that owned the last
+			// one is gone, and this one has to earn its stand-down by
+			// painting colour of its own.
+			h.colourSeen = false
 		}
 		return
 	case 'H', 'f':
@@ -383,6 +400,9 @@ func (h *Highlighter) observe(sequence string) {
 		}
 		if sgrPicksColour(body) {
 			h.lineTinted = true
+		}
+		if sgrPicksPalette(body) {
+			h.colourSeen = true
 		}
 		// A sequence that starts with a reset replaces the accumulated state;
 		// anything else adds to it.
@@ -401,8 +421,21 @@ func (h *Highlighter) observe(sequence string) {
 // Bold, dim, italic and underline are style, not colour, and do not silence a
 // highlight; palette, 256-colour, truecolor and reverse video do.
 func sgrPicksColour(body string) bool {
+	colour, _ := sgrColourKind(body)
+	return colour
+}
+
+// sgrPicksPalette reports whether an SGR body picks a foreground or background
+// colour — the mark of a program with a palette of its own (vim's syntax, top's
+// meters, a bastion's menu). Reverse video deliberately does not count: it marks
+// a span rather than styling a screen, and `less` marks a search hit that way.
+func sgrPicksPalette(body string) bool {
+	_, palette := sgrColourKind(body)
+	return palette
+}
+
+func sgrColourKind(body string) (colour, palette bool) {
 	parts := strings.Split(body, ";")
-	tint := false
 	for i := 0; i < len(parts); i++ {
 		raw := parts[i]
 		code := 0
@@ -418,21 +451,23 @@ func sgrPicksColour(body string) bool {
 			}
 			mode := atoi(parts[i+1])
 			if mode == 5 {
-				tint = true
+				colour, palette = true, true
 				i += 2
 			} else if mode == 2 {
-				tint = true
+				colour, palette = true, true
 				i += 4
 			}
 			continue
 		}
-		if code == 7 || code == 109 ||
-			(code >= 30 && code <= 37) || (code >= 90 && code <= 97) ||
-			(code >= 40 && code <= 47) || (code >= 100 && code <= 107) {
-			tint = true
+		switch {
+		case code == 7 || code == 109:
+			colour = true
+		case (code >= 30 && code <= 37) || (code >= 90 && code <= 97),
+			(code >= 40 && code <= 47) || (code >= 100 && code <= 107):
+			colour, palette = true, true
 		}
 	}
-	return tint
+	return colour, palette
 }
 
 func atoi(s string) int {

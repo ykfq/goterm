@@ -97,9 +97,11 @@ func (a *App) sidebar(c *ui.Context) {
 			}
 		})
 		ui.Divider(c)
+		a.sftpSessions(c)
+		ui.Divider(c)
 		ui.Row(c).Padding(8).Gap(6).Children(func() {
 			if ui.Button(c, "Settings").Clicked() {
-				a.showSettings = true
+				a.openSettings()
 			}
 			if ui.Button(c, "Known hosts").Clicked() {
 				a.showKnownHosts = true
@@ -528,7 +530,7 @@ func (a *App) welcome(c *ui.Context) {
 				a.openNewHost()
 			}
 			if ui.Button(c, "Settings").Clicked() {
-				a.showSettings = true
+				a.openSettings()
 			}
 		})
 		if hosts := a.hosts.List(); len(hosts) > 0 {

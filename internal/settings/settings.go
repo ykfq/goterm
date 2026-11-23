@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/ykfq/goterm/internal/atomicfile"
 )
@@ -39,6 +38,17 @@ const (
 	// anything useful.
 	MaxHighlightWords   = 64
 	MaxHighlightWordLen = 64
+
+	// The settings dialog is sized by a drag on its corner. The limits keep it
+	// usable: smaller and the three tabs no longer fit, larger and it stops
+	// being a dialog on a laptop screen.
+	MinSettingsWidth  = 440
+	MaxSettingsWidth  = 1200
+	MinSettingsHeight = 340
+	MaxSettingsHeight = 960
+	// DefaultSettingsWidth and DefaultSettingsHeight are what it opens at.
+	DefaultSettingsWidth  = 560
+	DefaultSettingsHeight = 640
 )
 
 // SchemaVersion is stamped into every file this package writes.
@@ -82,6 +92,10 @@ type Settings struct {
 	// included) matches as a substring, because those scripts have no spaces
 	// to bound a word with.
 	HighlightWords []string `json:"highlightWords,omitempty"`
+	// SettingsWidth and SettingsHeight are the settings dialog's size in DIPs,
+	// remembered from the last time its corner was dragged.
+	SettingsWidth  float32 `json:"settingsWidth,omitempty"`
+	SettingsHeight float32 `json:"settingsHeight,omitempty"`
 
 	// IdleNudge turns the idle keystroke on (see internal/sshx/nudge.go). It is
 	// on by default, because the sessions it defends — a shell with TMOUT, a
@@ -111,6 +125,8 @@ func Default() Settings {
 		CopyOnSelect:     true,
 		IdleTimeoutHours: 24,
 		SidebarWidth:     268,
+		SettingsWidth:    DefaultSettingsWidth,
+		SettingsHeight:   DefaultSettingsHeight,
 		IdleNudgeSeconds: DefaultNudgeSeconds,
 	}
 }
@@ -141,59 +157,18 @@ func (s *Settings) Clamp() {
 	if s.SidebarWidth < 180 || s.SidebarWidth > 520 {
 		s.SidebarWidth = Default().SidebarWidth
 	}
+	if s.SettingsWidth < MinSettingsWidth || s.SettingsWidth > MaxSettingsWidth {
+		s.SettingsWidth = DefaultSettingsWidth
+	}
+	if s.SettingsHeight < MinSettingsHeight || s.SettingsHeight > MaxSettingsHeight {
+		s.SettingsHeight = DefaultSettingsHeight
+	}
 	switch s.Encoding {
 	case "utf-8", "gb18030", "big5", "shift_jis":
 	default:
 		s.Encoding = "utf-8"
 	}
 	s.HighlightWords = clampWords(s.HighlightWords)
-}
-
-// clampWords drops blank, oversized and duplicate words and applies the cap.
-// Order is kept, so the list a user typed stays recognisable.
-func clampWords(in []string) []string {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(in))
-	seen := make(map[string]bool, len(in))
-	for _, w := range in {
-		w = strings.TrimSpace(w)
-		if w == "" || len(w) > MaxHighlightWordLen {
-			continue
-		}
-		k := strings.ToLower(w)
-		if seen[k] {
-			continue
-		}
-		seen[k] = true
-		out = append(out, w)
-		if len(out) == MaxHighlightWords {
-			break
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-// ParseHighlightWords reads the settings field's text: one keyword per line,
-// with commas and semicolons also accepted as separators so a paste of a
-// comma-separated list works without editing it first.
-func ParseHighlightWords(text string) []string {
-	fields := strings.FieldsFunc(text, func(r rune) bool {
-		return r == '\n' || r == '\r' || r == ',' || r == ';'
-	})
-	out := make([]string, 0, len(fields))
-	for _, f := range fields {
-		// A run of separators can leave a field of nothing but spaces:
-		// FieldsFunc splits on the separators, not on what surrounds them.
-		if f = strings.TrimSpace(f); f != "" {
-			out = append(out, f)
-		}
-	}
-	return out
 }
 
 // Load reads path, or returns the defaults when it is missing or unreadable.

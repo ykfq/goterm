@@ -37,7 +37,7 @@ func (a *App) menus() []appMenu {
 			}},
 			{label: "Close Tab", accel: "CmdOrCtrl+Shift+W", run: func() { a.closeTab(a.active) }},
 			{sep: true},
-			{label: "Settings…", accel: "CmdOrCtrl+,", run: func() { a.showSettings = true }},
+			{label: "Settings…", accel: "CmdOrCtrl+,", run: func() { a.openSettings() }},
 			{sep: true},
 			{label: "Export Hosts…", run: a.openExport},
 			{label: "Import Hosts…", run: a.openImport},

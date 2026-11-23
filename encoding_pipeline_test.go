@@ -37,7 +37,7 @@ func (r *oneByteReader) Read(p []byte) (int, error) {
 	return 1, nil
 }
 
-func TestASplitChineseLineReachesTheTerminalByteForByte(t *testing.T) {
+func TestASplitChineseLineReachesTheTerminalUnchanged(t *testing.T) {
 	const screen = "\x1b[?1049h\x1b[H\x1b[2J" +
 		"if [ \"${rc}\" -eq 0 ]; then\r\n" +
 		"    echo \"cms 全部迁移任务执行完成\"\r\n" +
@@ -45,13 +45,49 @@ func TestASplitChineseLineReachesTheTerminalByteForByte(t *testing.T) {
 		"    echo \"cms 存在失败的迁移任务，详见各 cmsN.log\"\r\n" +
 		"fi\r\n"
 
+	// The transcoder alone is byte-for-byte, split rune and all.
+	encoded, err := io.ReadAll(encode.Reader(&oneByteReader{data: []byte(screen)}, encode.UTF8))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encoded) != screen {
+		t.Fatalf("the transcoder changed a vim-style screen:\n got %q\nwant %q", encoded, screen)
+	}
+
+	// Through the highlighter, colour may be added — a pager showing plain
+	// text is painted the way cat is — but not one byte of text may change, and
+	// a rune that arrived in pieces is still one rune.
+	r := highlight.NewReader(encode.Reader(&oneByteReader{data: []byte(screen)}, encode.UTF8))
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !utf8.Valid(out) {
+		t.Fatalf("the decorated screen is not valid UTF-8: %q", out)
+	}
+	if !strings.HasPrefix(string(out), "\x1b[?1049h\x1b[H\x1b[2J") {
+		t.Fatalf("the screen's own control sequences were disturbed: %q", out)
+	}
+	if got, want := stripSGR(string(out)), stripSGR(screen); got != want {
+		t.Fatalf("the pipeline changed the text of the screen:\n got %q\nwant %q", got, want)
+	}
+}
+
+// A screen that brings its own colours is an editor's, not a pager's: vim
+// paints every cell and anything we insert would collide with its redraws, so
+// the bytes must come out exactly as they went in.
+func TestAVimScreenIsNotPainted(t *testing.T) {
+	const screen = "\x1b[?1049h\x1b[H\x1b[2J" +
+		"\x1b[1;32mif\x1b[0m \x1b[1;31merror\x1b[0m: disk full\r\n" +
+		"\x1b[7m~\x1b[0m\r\n"
+
 	r := highlight.NewReader(encode.Reader(&oneByteReader{data: []byte(screen)}, encode.UTF8))
 	out, err := io.ReadAll(r)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(out) != screen {
-		t.Fatalf("the pipeline changed a vim-style screen:\n got %q\nwant %q", out, screen)
+		t.Fatalf("an editor's coloured screen was painted:\n got %q\nwant %q", out, screen)
 	}
 }
 

@@ -25,13 +25,15 @@ This branch (`mygo-native`) replaces the 1.4.0 Wails/Vue/xterm frontend. What wo
 - Real terminal: colours, mouse reporting, scrollback, selection, copy/paste, search
   (Ctrl+Shift+F), IME composition at the cursor, OSC 52 copy.
 - Session logging to `%APPDATA%\goterm\logs` (off by default, switchable at runtime).
-- **Keyword highlighting** for plain output (`cat`, `tail`, `head`, `ps`, `tee`, batch `top`, logs):
-  severities, addresses, URLs, timestamps, shell/bash vocabulary, syslog and nginx. Full-screen
-  programs (`vim`, `less`, interactive `top`) and lines the program already coloured are left alone.
-  Switchable at runtime.
-- **SFTP file panel** (Ctrl+Shift+E, tab menu, or `--files`): browse, upload, download, make
-  folders, rename, delete, refresh, with progress. Drop files on the terminal to upload them to the
-  panel's directory. It rides the session's own SSH connection, so no second login.
+- **Keyword highlighting** for plain output (`cat`, `tail`, `head`, `ps`, `tee`, `less`, batch
+  `top`, logs): severities, addresses, URLs, timestamps, shell/bash vocabulary, syslog and nginx.
+  A program that paints its own colours (`vim`, `top`, a bastion menu) and lines the program
+  already coloured are left alone. Your own rules take a colour per line. Switchable at runtime.
+- **SFTP file panel**: double-click a session in the sidebar's *SFTP sessions* list (or Ctrl+Shift+E,
+  the tab menu, `--files`) and it opens beside that terminal; the splitter resizes it, and the
+  terminal gives up exactly the room it takes. Browse, upload, download, make folders, rename,
+  delete, refresh, with progress. Drop files on the panel — or on the terminal — to upload them.
+  It rides the session's own SSH connection, so no second login.
 - **Host import/export**: one sealed file (scrypt + AES-256-GCM) with hosts and their passwords,
   through native file dialogs.
 - **trzsz and lrzsz**: `trz`/`tsz` and `rz`/`sz` are handled inside the session's byte stream
@@ -40,7 +42,7 @@ This branch (`mygo-native`) replaces the 1.4.0 Wails/Vue/xterm frontend. What wo
 - Settings in `settings.json`: theme, font family/size, scrollback (MB), logging, remote encoding
   (UTF-8/GB18030/Big5/Shift_JIS), select-to-copy, idle hours, data directory.
 
-Not ported yet (tracked in [plan2.md](plan2.md)): user-defined highlight rules and `.msyn` import,
+Not ported yet (tracked in [plan2.md](plan2.md)): MobaXterm `.msyn` import,
 the known-hosts review beyond listing/forgetting, and resizing the scrollback of an open terminal
 (reconnect applies it).
 

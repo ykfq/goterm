@@ -14,9 +14,20 @@ import (
 	"github.com/ykfq/goterm/internal/settings"
 )
 
+// openSettings shows the dialog, rebuilding the keyword field's text from the
+// saved rules. It is rebuilt here and not on every frame on purpose: the field
+// is free text while it is edited, and a line the user just ended with Enter
+// must survive the frame that follows it.
+func (a *App) openSettings() {
+	if !a.showSettings {
+		a.highlightText = strings.Join(a.prefs.HighlightWords, "\n")
+	}
+	a.showSettings = true
+}
+
 func (a *App) settingsDialog(c *ui.Context) {
 	ui.Modal(c, &a.showSettings, func() {
-		ui.Column(c).Width(560).MaxHeight(640).Gap(12).Children(func() {
+		ui.Column(c).Width(a.prefs.SettingsWidth).Height(a.prefs.SettingsHeight).Gap(12).Children(func() {
 			ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, "Settings").FontSize(18).Bold().Grow(1)
 				ui.Button(c, "Done").OnClick(func() { a.showSettings = false })
@@ -32,13 +43,55 @@ func (a *App) settingsDialog(c *ui.Context) {
 			default:
 				a.settingsStorage(c)
 			}
+			a.settingsResizeCorner(c)
 		})
 	})
 }
 
+// settingsResizeCorner is the grip in the dialog's bottom-right corner: drag it
+// and the dialog follows, as a window's corner does. The size is clamped while
+// dragging and written to settings.json when the drag ends, so a drag is one
+// write rather than one per frame.
+func (a *App) settingsResizeCorner(c *ui.Context) {
+	ui.Row(c).Children(func() {
+		ui.Spacer(c)
+		grip := ui.Box(c).Width(16).Height(16).Radius(3).
+			Background(c.Theme().Border).Cursor(ui.CursorResizeNWSE)
+		grip.Label("Resize settings")
+		if dx, dy, held := grip.Dragged(); held {
+			a.prefs.SettingsWidth = clampFloat(a.prefs.SettingsWidth+dx, settings.MinSettingsWidth, settings.MaxSettingsWidth)
+			a.prefs.SettingsHeight = clampFloat(a.prefs.SettingsHeight+dy, settings.MinSettingsHeight, settings.MaxSettingsHeight)
+		}
+		if _, _, ended := grip.DragEnded(); ended {
+			a.savePrefs()
+		}
+	})
+}
+
+// settingsPageBar is the width the settings pages reserve at their right edge
+// for the scroller's bar. mygo draws the bar over the content, so without the
+// reserve the right edge of every input and select sits under it.
+func settingsPageBar(c *ui.Context) float32 {
+	bar := c.Theme().ScrollbarWidth
+	if bar <= 0 {
+		bar = 6 // the theme's own default
+	}
+	return bar + 2
+}
+
+func clampFloat(v, lo, hi float32) float32 {
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
 func (a *App) settingsAppearance(c *ui.Context) {
 	ui.Scroll(c).Grow(1).Children(func() {
-		ui.Column(c).Gap(12).Children(func() {
+		ui.Column(c).Gap(12).Padding(0, settingsPageBar(c), 0, 0).Children(func() {
 			// Theme
 			ui.Field(c, "Theme", func() {
 				labels := []string{"System", "Dark", "Light"}
@@ -107,28 +160,39 @@ func (a *App) settingsAppearance(c *ui.Context) {
 
 func (a *App) settingsBehaviour(c *ui.Context) {
 	ui.Scroll(c).Grow(1).Children(func() {
-		ui.Column(c).Gap(12).Children(func() {
+		ui.Column(c).Gap(12).Padding(0, settingsPageBar(c), 0, 0).Children(func() {
 			ui.Field(c, "Highlight keywords in terminal output", func() {
 				if ui.Switch(c, &a.prefs.Highlight).Changed() {
 					a.applySettings()
 				}
 			})
-			ui.Text(c, "Colours errors, warnings, addresses and commands in plain output (cat, tail, head, ps, tee). Full-screen programs such as vim, less and top keep their own colours.").
+			ui.Text(c, "Colours errors, warnings, addresses and commands in plain output (cat, tail, head, ps, tee, less). Programs that colour their own screen, such as vim and top, keep it.").
 				FontSize(11).TextColor(c.Theme().TextMuted)
 
-			words := strings.Join(a.prefs.HighlightWords, "\n")
-			ui.Field(c, "Your own keywords, one per line", func() {
-				area := ui.TextArea(c, &words)
-				area.Height(72)
+			ui.Field(c, "Your own keywords", func() {
+				area := ui.TextArea(c, &a.highlightText)
+				// KeepScrollbars: a keyword list is longer than the box, and a
+				// bar that only appears on hover looks like there is none.
+				area.Height(108).Label("Highlight keywords").KeepScrollbars(true)
 				if area.Changed() {
-					list := settings.ParseHighlightWords(words)
+					list := settings.ParseHighlightWords(a.highlightText)
 					if !slices.Equal(list, a.prefs.HighlightWords) {
 						a.prefs.HighlightWords = list
 						a.applySettings()
 					}
 				}
 			})
-			ui.Text(c, "Matched case-insensitively. ASCII words match whole words only; anything else matches as written.").
+			ui.Text(c, "One rule per line: a colour, a colon, then words joined by | . "+
+				"Colours: "+strings.Join(settings.KeywordColours, ", ")+" or #RRGGBB; no colour means the default. "+
+				"Example — GREEN: info|healthy|pass").
+				FontSize(11).TextColor(c.Theme().TextMuted)
+			if unknown := settings.UnknownColours(a.highlightText); len(unknown) > 0 {
+				// A typo used to fail silently: the line became a keyword that
+				// could never match. Say so where the user is looking.
+				ui.Text(c, "Not a colour, so that whole line is matched as a keyword: "+strings.Join(unknown, ", ")).
+					FontSize(11).TextColor(c.Theme().Danger)
+			}
+			ui.Text(c, "Matched case-insensitively. ASCII words match whole words only; anything else matches as written. Built-in colours win where they already matched.").
 				FontSize(11).TextColor(c.Theme().TextMuted)
 
 			ui.Field(c, "Record every session to a log file", func() {
@@ -207,45 +271,51 @@ func (a *App) settingsBehaviour(c *ui.Context) {
 }
 
 func (a *App) settingsStorage(c *ui.Context) {
-	ui.Column(c).Gap(12).Children(func() {
-		ui.Field(c, "Data directory", func() {
-			ui.Text(c, a.dir).Selectable().FontSize(12)
-			ui.Row(c).Gap(8).Children(func() {
-				if ui.Button(c, "Open").Clicked() {
-					_ = mygo.Shell.OpenPath(a.dir)
-				}
-				if ui.Button(c, "Change…").Clicked() {
-					go a.pickStorageDir()
+	// The same scroller as the other two pages. Without one, shrinking the
+	// dialog made this page spill out of the panel and paint over the dimmed
+	// backdrop below it — content drawn outside its own window, and nothing to
+	// scroll it back with.
+	ui.Scroll(c).Grow(1).Children(func() {
+		ui.Column(c).Gap(12).Padding(0, settingsPageBar(c), 0, 0).Children(func() {
+			ui.Field(c, "Data directory", func() {
+				ui.Text(c, a.dir).Selectable().FontSize(12)
+				ui.Row(c).Gap(8).Children(func() {
+					if ui.Button(c, "Open").Clicked() {
+						_ = mygo.Shell.OpenPath(a.dir)
+					}
+					if ui.Button(c, "Change…").Clicked() {
+						go a.pickStorageDir()
+					}
+				})
+			})
+			ui.Text(c, "Changing the directory takes effect at the next start; files are not moved for you.").
+				FontSize(11).TextColor(c.Theme().TextMuted)
+			ui.Field(c, "Settings file", func() {
+				ui.Text(c, a.configPath).Selectable().FontSize(12)
+			})
+			ui.Field(c, "Session logs", func() {
+				ui.Text(c, a.logDir).Selectable().FontSize(12)
+				if ui.Button(c, "Open logs").Clicked() {
+					_ = mygo.Shell.OpenPath(a.logDir)
 				}
 			})
-		})
-		ui.Text(c, "Changing the directory takes effect at the next start; files are not moved for you.").
-			FontSize(11).TextColor(c.Theme().TextMuted)
-		ui.Field(c, "Settings file", func() {
-			ui.Text(c, a.configPath).Selectable().FontSize(12)
-		})
-		ui.Field(c, "Session logs", func() {
-			ui.Text(c, a.logDir).Selectable().FontSize(12)
-			if ui.Button(c, "Open logs").Clicked() {
-				_ = mygo.Shell.OpenPath(a.logDir)
-			}
-		})
-		ui.Field(c, "Credential store", func() {
-			ui.Text(c, a.secretBackend()).FontSize(12)
-		})
-		ui.Divider(c)
-		ui.Field(c, "Host list", func() {
-			ui.Text(c, "Move hosts and their passwords to another machine as one sealed file.").
-				FontSize(11).TextColor(c.Theme().TextMuted)
-			ui.Row(c).Gap(8).Children(func() {
-				if ui.Button(c, "Export…").Clicked() {
-					a.showSettings = false
-					a.openExport()
-				}
-				if ui.Button(c, "Import…").Clicked() {
-					a.showSettings = false
-					a.openImport()
-				}
+			ui.Field(c, "Credential store", func() {
+				ui.Text(c, a.secretBackend()).FontSize(12)
+			})
+			ui.Divider(c)
+			ui.Field(c, "Host list", func() {
+				ui.Text(c, "Move hosts and their passwords to another machine as one sealed file.").
+					FontSize(11).TextColor(c.Theme().TextMuted)
+				ui.Row(c).Gap(8).Children(func() {
+					if ui.Button(c, "Export…").Clicked() {
+						a.showSettings = false
+						a.openExport()
+					}
+					if ui.Button(c, "Import…").Clicked() {
+						a.showSettings = false
+						a.openImport()
+					}
+				})
 			})
 		})
 	})

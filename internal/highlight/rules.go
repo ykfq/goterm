@@ -1,10 +1,13 @@
 package highlight
 
 import (
+	"fmt"
 	"regexp"
 	"sort"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/ykfq/goterm/internal/settings"
 )
 
 // SGR sequences. Colour is the only thing a rule changes; everything that was
@@ -23,8 +26,10 @@ const (
 
 	brightRed     = "\x1b[1;31m"
 	brightGreen   = "\x1b[1;32m"
+	brightYellow  = "\x1b[1;33m"
 	brightCyan    = "\x1b[1;36m"
 	brightMagenta = "\x1b[1;35m"
+	black         = "\x1b[30m"
 	urlSGR        = "\x1b[4;36m"
 )
 
@@ -356,37 +361,110 @@ type wordRule struct {
 	match []byte // keyword bytes
 	lower []byte // match, with ASCII folded down
 	bound bool   // require non-word bytes around an all-ASCII match
+	sgr   string // colour this word was given in the settings dialog
 }
 
-// compileWords prepares the user's keywords for applyWords. Longest first, so
+// compileWords prepares the user's keyword rules for applyWords. Each line of
+// the settings field is "COLOUR: word|word" or a bare word list; the colour is
+// resolved here, because this package owns the palette. Longest word first, so
 // "conn refused" wins over a shorter word nested in it; order otherwise keeps
 // the user's.
-func compileWords(words []string) []wordRule {
-	rules := make([]wordRule, 0, len(words))
-	for _, w := range words {
-		if w == "" {
-			continue
+func compileWords(lines []string) []wordRule {
+	parsed := settings.ParseWordRules(strings.Join(lines, "\n"))
+	rules := make([]wordRule, 0, len(parsed)*4)
+	for _, rule := range parsed {
+		sgr := sgrForColour(rule.Colour)
+		for _, w := range rule.Words {
+			if w == "" {
+				continue
+			}
+			r := wordRule{match: []byte(w), lower: make([]byte, len(w)), bound: true, sgr: sgr}
+			for i := 0; i < len(w); i++ {
+				c := w[i]
+				if c < utf8.RuneSelf && !isWordByte(c) {
+					r.bound = false // punctuation inside the keyword: plain substring
+				}
+				if c >= 'A' && c <= 'Z' {
+					c += 'a' - 'A'
+				}
+				if c >= utf8.RuneSelf {
+					r.bound = false
+				}
+				r.lower[i] = c
+			}
+			rules = append(rules, r)
 		}
-		r := wordRule{match: []byte(w), lower: make([]byte, len(w)), bound: true}
-		for i := 0; i < len(w); i++ {
-			c := w[i]
-			if c < utf8.RuneSelf && !isWordByte(c) {
-				r.bound = false // punctuation inside the keyword: plain substring
-			}
-			if c >= 'A' && c <= 'Z' {
-				c += 'a' - 'A'
-			}
-			if c >= utf8.RuneSelf {
-				r.bound = false
-			}
-			r.lower[i] = c
-		}
-		rules = append(rules, r)
 	}
 	sort.SliceStable(rules, func(i, j int) bool {
 		return len(rules[i].match) > len(rules[j].match)
 	})
 	return rules
+}
+
+// sgrForColour maps a rule's colour to the sequence its words are painted with.
+// An empty name is the default the field has always used; anything else has
+// already been validated by settings.ParseWordRules.
+func sgrForColour(name string) string {
+	switch strings.ToUpper(name) {
+	case "":
+		return brightMagenta
+	case "RED":
+		return brightRed
+	case "GREEN":
+		return brightGreen
+	case "YELLOW":
+		return brightYellow
+	case "BLUE":
+		return blue
+	case "MAGENTA":
+		return brightMagenta
+	case "CYAN":
+		return brightCyan
+	case "WHITE":
+		return white
+	case "GREY", "GRAY":
+		return grey
+	case "BLACK":
+		return black
+	}
+	if hex, ok := strings.CutPrefix(name, "#"); ok {
+		if sgr, ok := truecolor(hex); ok {
+			return sgr
+		}
+	}
+	return brightMagenta
+}
+
+// truecolor turns "rrggbb" or "rgb" into a 24-bit foreground colour.
+func truecolor(hex string) (string, bool) {
+	if len(hex) == 3 {
+		hex = string([]byte{hex[0], hex[0], hex[1], hex[1], hex[2], hex[2]})
+	}
+	if len(hex) != 6 {
+		return "", false
+	}
+	var v [3]int
+	for i := 0; i < 3; i++ {
+		hi, ok1 := hexDigit(hex[i*2])
+		lo, ok2 := hexDigit(hex[i*2+1])
+		if !ok1 || !ok2 {
+			return "", false
+		}
+		v[i] = hi<<4 | lo
+	}
+	return fmt.Sprintf("\x1b[38;2;%d;%d;%dm", v[0], v[1], v[2]), true
+}
+
+func hexDigit(b byte) (int, bool) {
+	switch {
+	case '0' <= b && b <= '9':
+		return int(b - '0'), true
+	case 'a' <= b && b <= 'f':
+		return int(b-'a') + 10, true
+	case 'A' <= b && b <= 'F':
+		return int(b-'A') + 10, true
+	}
+	return 0, false
 }
 
 func isWordByte(c byte) bool {
@@ -418,7 +496,7 @@ func applyWords(line string, words []wordRule, mask []byte, edits *[]edit) {
 			for j := i; j < end; j++ {
 				mask[j] = 1
 			}
-			*edits = append(*edits, edit{start: i, end: end, sgr: brightMagenta})
+			*edits = append(*edits, edit{start: i, end: end, sgr: w.sgr})
 		}
 	}
 }

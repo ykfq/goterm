@@ -109,3 +109,37 @@ func TestSetWordsFromEmptyToSomethingTakesEffectMidStream(t *testing.T) {
 		t.Fatal("clearing the words left them coloured")
 	}
 }
+
+// The keyword field carries a colour per line now. The words must come out in
+// the colour the user typed, not in the default one.
+func TestEachRulePaintsItsOwnColour(t *testing.T) {
+	h := New()
+	// Words the built-in sets do not claim, so what is measured is the rule's
+	// colour and not which rule won: built-ins outrank the user's list.
+	h.SetWords([]string{"GREEN: healthy|passed", "RED: exploded|doomed"})
+	got := h.paintLine("healthy check, then exploded")
+	for _, want := range []string{brightGreen + "healthy", brightRed + "exploded"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
+	}
+	if strings.Contains(got, brightMagenta+"healthy") || strings.Contains(got, brightMagenta+"exploded") {
+		t.Fatalf("a coloured rule fell back to the default colour: %q", got)
+	}
+}
+
+func TestARGBRulePaintsInThatRGB(t *testing.T) {
+	got := paintWith(t, []string{"#ff8800: deploy"}, "deploy finished")
+	if !strings.Contains(got, "\x1b[38;2;255;136;0mdeploy") {
+		t.Fatalf("24-bit colour not used: %q", got)
+	}
+}
+
+func TestColouredWordsStillBowToTheProgram(t *testing.T) {
+	h := New()
+	h.SetWords([]string{"RED: error"})
+	got := string(h.Process([]byte("\x1b[42merror: already green\x1b[0m\n")))
+	if strings.Contains(got, brightRed) {
+		t.Fatalf("a user colour overpainted the program's: %q", got)
+	}
+}

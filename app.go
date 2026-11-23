@@ -28,7 +28,7 @@ import (
 )
 
 // Version is what the status bar and About show.
-const Version = "2.3.2"
+const Version = "2.4.0"
 
 // App is GoTerm's state. In 1.x this type was a Wails service and the frontend
 // called it over IPC; now it is an ordinary Go value that the view reads on the
@@ -65,7 +65,15 @@ type App struct {
 	selectedHost string
 	openGroups   map[string]bool
 
-	showSettings   bool
+	showSettings bool
+	// highlightText is the keyword field's text while the settings dialog is
+	// open. It is the field's own state, not a rendering of prefs: rebuilding
+	// it from the parsed rules every frame would eat the newline the user just
+	// typed, which is exactly why Enter "did not add a line".
+	highlightText string
+	// themeSource is the source mygo was last told to draw with (see
+	// applyAppearance).
+	themeSource    mygo.ThemeSource
 	showKnownHosts bool
 	showHostEditor bool
 	showAbout      bool
@@ -278,7 +286,8 @@ func (a *App) post(fn func()) {
 
 // Open creates the main window and the menu.
 func (a *App) Open() {
-	a.applyAppearance()
+	a.themeSource = themeSourceFor(a.prefs.Theme)
+	mygo.Theme.SetSource(a.themeSource)
 	a.win = mygo.NewWindow(mygo.WindowOptions{
 		Title:     "GoTerm",
 		Width:     1200,
@@ -373,16 +382,33 @@ func (a *App) savePrefs() {
 	}
 }
 
-// applyAppearance makes mygo and every open terminal follow the theme setting.
-func (a *App) applyAppearance() {
-	switch a.prefs.Theme {
+// themeSourceFor maps the theme setting to the source mygo draws with.
+func themeSourceFor(theme string) mygo.ThemeSource {
+	switch theme {
 	case "light":
-		mygo.Theme.SetSource(mygo.ThemeLight)
+		return mygo.ThemeLight
 	case "dark":
-		mygo.Theme.SetSource(mygo.ThemeDark)
-	default:
-		mygo.Theme.SetSource(mygo.ThemeSystem)
+		return mygo.ThemeDark
 	}
+	return mygo.ThemeSystem
+}
+
+// applyAppearance makes mygo and every open terminal follow the theme setting.
+//
+// It pushes the source only when it changes, and only with a window: pushing a
+// theme is a trip through mygo's main loop, and a headless view (the tests) has
+// no loop to arrive on, so the call would wait for a frame that never comes.
+// Open sets the first source itself, before there is a window.
+func (a *App) applyAppearance() {
+	if a.win == nil {
+		return
+	}
+	src := themeSourceFor(a.prefs.Theme)
+	if src == a.themeSource {
+		return
+	}
+	a.themeSource = src
+	mygo.Theme.SetSource(src)
 }
 
 func (a *App) terminalTheme() *terminal.Theme {

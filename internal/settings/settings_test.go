@@ -58,8 +58,10 @@ func TestMalformedFileFallsBackToDefaults(t *testing.T) {
 // The keyword list is the one preference a user pastes in, so its parsing and
 // its limits are pinned here rather than left to whatever the dialog sends.
 func TestHighlightWordsAreParsedTrimmedAndCapped(t *testing.T) {
+	// One rule per line; the commas and semicolons the field accepted before
+	// colours still separate words on a line without a colour.
 	got := ParseHighlightWords(" OOM \n, backup failed ;  ;内存不足\nOOM\n")
-	if strings.Join(got, "|") != "OOM|backup failed|内存不足|OOM" {
+	if strings.Join(got, " / ") != "OOM / backup failed|内存不足" {
 		t.Fatalf("parsed %+v", got)
 	}
 
@@ -68,8 +70,12 @@ func TestHighlightWordsAreParsedTrimmedAndCapped(t *testing.T) {
 		strings.Repeat("x", MaxHighlightWordLen+1), "", " dup ", "DUP"),
 		repeatWord("w", MaxHighlightWords+4)...)
 	s.Clamp()
-	if len(s.HighlightWords) > MaxHighlightWords {
-		t.Fatalf("kept %d words, the cap is %d", len(s.HighlightWords), MaxHighlightWords)
+	words := 0
+	for _, rule := range ParseWordRules(strings.Join(s.HighlightWords, "\n")) {
+		words += len(rule.Words)
+	}
+	if words > MaxHighlightWords {
+		t.Fatalf("kept %d words, the cap is %d", words, MaxHighlightWords)
 	}
 	seen := map[string]bool{}
 	for _, w := range s.HighlightWords {

@@ -687,6 +687,146 @@ the state it fixes.
 and pins the absence of the clear sequences; `TestResetTerminalIsACommandWithAKey`
 keeps the command in the View menu.
 
+### `less` gets the colours `cat` gets (2026-11-20)
+
+The report: "I read files with `less` most of the time, and it has no
+highlighting — make it like `cat`." It had none by an explicit rule: the
+highlighter stood down for the whole alternate screen, on the theory that a
+cursor-addressed screen belongs to its program. That rule was written for
+*editors*, and it was too broad — it silenced every pager too, and a pager is
+where a log is actually read.
+
+The line that matters is not "full screen or not" but **has this program picked
+a colour?** vim, top and nano have: they paint each cell from a palette of their
+own, and an SGR inserted between their bytes is overwritten by the next repaint
+or survives as a colour they never chose. `less` on a plain file has not: its
+rows are lines of text, and colouring them is the whole request.
+
+So the state is `colourSeen` — set the first time the remote program picks a
+**foreground or background** colour, cleared on every alternate-screen entry and
+exit, because a new screen regime brings a new palette. The two stand-downs now
+consult it:
+
+- alternate screen **and** colour seen → pass through untouched (vim, top,
+  htop, nano, a bastion menu);
+- cursor-addressed fragment **and** colour seen → pass through (the editor that
+  never switches screens);
+- otherwise the run falls through to the ordinary line painter, so a plain
+  `less` row, newline or not, is painted exactly like a `cat` line.
+
+Reverse video is deliberately **not** enough to set `colourSeen`: `less` marks a
+search hit with `\x1b[7m`, and counting that as "this program has colours" would
+mean that after one `/error` the pager goes monochrome for the rest of the
+session. Reverse still silences **the line it appears on**, and the screen keeps
+being painted around it.
+
+Verified on real bytes rather than on reasoning: a `script` capture of `less -R`
+over a 200-column log — including the `\x1b[H` + `\x1bM` repaints `less` uses
+when paging — fed through `Process` produced the timestamp, `app[pid]:`, `ERROR`
+and address colours on every row; a vim trace carrying `\x1b[1;32m` came out
+byte-identical.
+
+Tests: `TestPagerOnPlainTextIsHighlighted`, `TestAPagerWithASearchHitKeepsPainting`,
+`TestTheShapeOfARealLessSessionIsPainted`, `TestAlternateScreenThatColoursIsLeftAlone`,
+`TestCursorAddressedFragmentIsLeftAlone`, `TestAVimScreenIsNotPainted` and
+`TestASplitChineseLineReachesTheTerminalUnchanged`.
+
+The known limit, in the safe direction: `less -R` over a file that already
+carries its own colours stands down for the whole screen, because the colour can
+be anywhere in it. No colour is a better failure than colour on top of colour.
+
+### The keyword field takes a colour per line (2026-11-20)
+
+Reported together: "I cannot add a second keyword — Enter does nothing", and "I
+cannot choose a colour". The colour was the missing feature. Enter was a bug, and
+a silly one: the field's text was a local string rebuilt from the saved words at
+the top of every frame, so the newline the editor inserted was gone by the next
+frame — the caret did not move and the next line landed on the previous one,
+`RED: error|fatal` then `GREEN: info` becoming `RED: error|fatalGREEN: info`. The
+text now lives on the App (`highlightText`), rebuilt from the saved rules when the
+dialog opens and never while it is being typed in.
+
+The format is the one the user asked for: one rule per line, a colour, a colon,
+then words joined by `|`.
+
+    GREEN: info|healthy|pass
+    RED: error|fatal|fail
+    #ff8800: deploy|release
+
+The grammar lives in one place, `settings.ParseWordRules`, because two readers
+need it and must not drift: the highlighter compiles it into colour rules, and
+the dialog stores it back. `|` always separates; a comma or semicolon separates
+too, but only on a line without a colour, as that is what the field did before.
+No colour means the default bright magenta, so an old list keeps working with no
+migration. A colour name that is a typo cannot be one, so that line stays a
+keyword that never matches — silently doing nothing is the worst answer a
+settings field can give, so the dialog names the tokens it refused.
+
+**The dialog resizes**, too: `settingsWidth`/`settingsHeight` (440–1200 ×
+340–960) are dragged by a grip in the bottom-right corner, clamped while
+dragging, and written once on `DragEnded`.
+
+Tests: `TestTheKeywordFieldReadsOneColouredRulePerLine` and its neighbours in
+`internal/settings`; `TestEachRulePaintsItsOwnColour`, `TestARGBRulePaintsInThatRGB`
+and `TestColouredWordsStillBowToTheProgram` in `internal/highlight`;
+`TestEnterAddsAKeywordRuleLine`, `TestAColouredRuleReachesTheSavedSettings`,
+`TestAnUnknownColourIsCalledOutInTheDialog`, `TestDraggingTheCornerResizesTheDialog`
+and `TestTheResizeGripStopsAtItsLimits` in the root package. The Enter test fails
+with the old per-frame rebuild, reporting exactly `RED: error|fatalGREEN: info`.
+
+**Two layout bugs came out of the same screenshot.** The keyword box had no
+scroll bar: mygo draws a scroll container's bar only while it is hovered unless
+told to keep it, so `KeepScrollbars(true)` is the fix. And every input in the
+settings pages ended *under* the page's scroll bar, which is drawn over the
+content: the pages now reserve `Theme.ScrollbarWidth + 2` at their right edge.
+Measured: the field's right edge used to land exactly on the dialog's edge and
+now stops eight DIPs short.
+
+**A third, reported after a resize.** The Storage page had no scroller at all,
+so dragging the dialog to its minimum height made the page hang out of the panel
+and paint over the dimmed backdrop below it — outside its own window, because the
+modal panel does not clip. It now has the same scroller as the other two pages.
+
+### Files where you look for them (2026-11-23)
+
+The report was about discoverability, not capability: the file panel existed,
+behind a tab's context menu, and nobody goes looking there for a file browser.
+It now has a home in the sidebar's bottom left — an **SFTP sessions** list — and
+a double click opens that session's files beside its terminal.
+
+The list is not a second kind of connection. An SFTP channel rides the tab's own
+SSH connection (`internal/sshx`), so a row is a tab and the panel is a state of
+it (`Tab.SFTP`). That is what keeps the promise the panel always made — no second
+login — and it is also why the list can only offer things that can be browsed:
+
+- a tab with a live session is listed, and a double click opens its panel on the
+  remote home;
+- a tab whose session ended keeps its row while the panel is open, and says
+  `Closed — reconnect to browse`; opening it explains instead of showing a panel
+  that could only fail;
+- a tab with neither is not listed at all, because an entry that cannot work is
+  noise. The empty list says so, in one line.
+
+The width was already the splitter's (`Tab.FilesWidth`, clamped to 240 DIP up to
+half the window), which is exactly the user's second sentence: the panel grows,
+the terminal gives up that much room. What was missing was a way to find the
+panel, not a way to size it.
+
+**Dropping files works on the panel too**, which is where people try it first.
+The panel takes the drop itself (`DroppedFiles`) and uploads to the folder it is
+showing; while the files hover, its border takes the accent colour and a line
+says which folder they will land in. Dropping on the terminal keeps working:
+same upload, same directory.
+
+Tests, all against a real local SSH server with a real SFTP subsystem
+(`sshtest`, `SFTPRoot`): `TestTheSidebarListsSessionsAndADoubleClickOpensTheFiles`
+(two presses at one point and one moment are a double click),
+`TestASessionThatEndedSaysSoInsteadOfBrowsing`, `TestTheSFTPListSaysHowToFillIt`,
+`TestDroppingFilesOnThePanelUploadsThem` (the bytes arrive on the server's disk)
+and `TestTheFilePanelLeavesTheTerminalItsShare` (the clamp, in a real view
+context). Removing the double click handler, or the panel's drop handler, fails
+exactly those tests.
+
 ### `cat` shows Chinese, `vim` shows `~E~C` (2026-11-19)
 
 The report: a UTF-8 file of shell script reads correctly through `cat` and comes
@@ -1103,7 +1243,12 @@ nginx 配置。后果只是色相不同（关键字青色而不是 bash 紫红�
    没有换行的片段，就当作屏幕重绘，不插入任何东西；遇到真正的换行就恢复。只减不增，所以最坏情况是“这一行没上色”。
 
 代价说清楚：`less` 默认也走 alt screen（`less` 除非 `-X`），所以它在 GoTerm 里**不做**关键字高亮；`cat` / `tail` / `head` / `grep` 这类
-流式输出照常高亮。要 `less` 也上色，用 `less -X`（不占 alt screen）即可。钉住它的测试在 `lib/highlight.test.ts`：
+流式输出照常高亮。要 `less` 也上色，用 `less -X`（不占 alt screen）即可。
+
+> **2.x 更新（2026-11-20）**：上面这条已经放宽。备用屏不再是“一律不碰”，改由 `colourSeen`
+> 判断——程序自己选过前景/背景色就让位（vim/top/nano），从没选过就照常上色（`less` 看纯文本、
+> `less -X` 一样；`less` 的搜索结果反显不算“有了配色”）。见 A 段 `less` gets the colours
+> `cat` gets。钉住它的测试在 `lib/highlight.test.ts`：
 编辑器屏幕逐字节不动（含 truecolor 行）、退出后颜色不泄漏、以及没进 alt screen 时的兜底。
 
 ---
